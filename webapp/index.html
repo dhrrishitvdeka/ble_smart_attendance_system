@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BLE Smart Classroom Attendance System</title>
-<link rel="stylesheet" href="styles.css?v=vtop-4" />
+<link rel="stylesheet" href="styles.css?v=vtop-5" />
 </head>
 <body>
 
@@ -241,12 +241,12 @@
         <span class="badge" id="p-device"></span>
         <span class="badge" id="p-class"></span>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row status-row">
         <span class="badge warn" id="ble-status">BLE status&hellip;</span>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row pos-row">
         <label>Simulated position (for testing)
-          <select id="sim-position" style="max-width:260px" onchange="setSimPosition(this.value)">
+          <select id="sim-position" onchange="setSimPosition(this.value)">
             <option value="near">Near &mdash; strong signal</option>
             <option value="back">Back of classroom &mdash; moderate</option>
             <option value="outside">Outside classroom &mdash; no direct link</option>
@@ -268,7 +268,7 @@
     <h3>Scanning for teacher session</h3>
     <p class="muted" style="font-size:13.5px;margin:6px 0 0">Keep Bluetooth on. The scan lasts about 2 seconds.</p>
     <div class="scan-anim" aria-hidden="true"><div></div></div>
-    <div id="ble-status-scan" class="badge warn" style="display:block;text-align:center;margin-bottom:10px"></div>
+    <div id="ble-status-scan" class="badge warn"></div>
     <div id="scan-result"></div>
     <button class="btn block" onclick="attemptRelay()">Try Relay Path (if direct fails)</button>
     <button class="btn ghost block" onclick="stopScan();studentHome()">Cancel</button>

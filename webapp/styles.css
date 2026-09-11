@@ -41,11 +41,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--ink); line-
   margin: 14px auto 0;
   border-radius: 18px;
   color: #fff;
-  background: linear-gradient(100deg, rgba(16, 52, 120, 0.72), rgba(26, 115, 232, 0.66));
+  background: linear-gradient(100deg, rgba(8, 28, 78, 0.9), rgba(15, 60, 138, 0.84));
   -webkit-backdrop-filter: blur(18px) saturate(1.5);
   backdrop-filter: blur(18px) saturate(1.5);
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  box-shadow: 0 12px 32px rgba(10, 35, 85, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 12px 32px rgba(4, 18, 52, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.22);
   overflow: hidden;
 }
 .inst-bar::before {
@@ -55,10 +55,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--ink); line-
 .inst-bar-inner {
   position: relative;
   max-width: 1240px; margin: 0 auto; padding: 12px 20px;
-  display: flex; align-items: baseline; gap: 14px;
+  display: flex; align-items: center; gap: 12px;
 }
-.inst-logo { font-family: Georgia, "Times New Roman", serif; font-size: 30px; font-weight: 700; letter-spacing: 0.02em; }
-.inst-sub { font-size: 14px; opacity: 0.95; }
+.inst-logo { font-family: Georgia, "Times New Roman", serif; font-size: 30px; font-weight: 700; letter-spacing: 0.02em; line-height: 1; }
+.inst-sub { font-size: 14px; opacity: 0.92; line-height: 1.25; }
 
 /* ---------- Title block ---------- */
 .hero { padding: 18px 4px 0; }
@@ -197,6 +197,19 @@ details.panel summary { cursor: pointer; font-weight: 650; }
 /* ---------- Student ---------- */
 #screen-student .phone-page { display: none; max-width: 520px; margin: 0 auto; }
 #screen-student .phone-page.active { display: block; }
+#p-name { color: var(--ink); font-size: 20px; margin: 2px 0; }
+#p-meta { margin: 0 0 4px; }
+#sp-home .profile-card .row { align-items: center; }
+/* BLE status renders as a full-width notice bar, not a pill */
+#ble-status, #ble-status-scan {
+  display: block; width: 100%; white-space: normal; line-height: 1.5;
+  border-radius: 6px; padding: 8px 12px; font-weight: 600; text-align: left;
+}
+#ble-status-scan { margin-bottom: 10px; }
+#sp-home .status-row { margin-top: 12px; }
+#sp-home .pos-row { margin-top: 12px; }
+#sp-home .pos-row label { display: block; width: 100%; }
+#sim-position { width: 100%; }
 .avatar { width: 44px; height: 44px; border-radius: 50%; background: #1565c0; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; margin-bottom: 8px; }
 .relay-toggle { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; cursor: pointer; }
 .relay-toggle input { width: 16px; height: 16px; margin-top: 3px; accent-color: #1565c0; }
