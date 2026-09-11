@@ -22,8 +22,9 @@ async function studentLogin() {
   const s = DB.students.find(x => x.student_id === val("st-id").toUpperCase());
   const msg = el("st-login-msg");
   if (!s || (await sha256hex("salt_" + s.student_id + val("st-pass"))) !== s.password_hash) {
-    msg.textContent = "Invalid credentials."; msg.className = "msg err"; return;
+    msg.textContent = "Invalid credentials. Check your ID and password."; msg.className = "msg err"; return;
   }
+  msg.textContent = ""; msg.className = "msg";
   currentStudent = s;
   // Authenticated session carries the registered device — student cannot
   // claim another ID or another device during attendance (spec §6).
@@ -31,8 +32,10 @@ async function studentLogin() {
 
   el("st-name").textContent = s.name;
   el("p-name").textContent = s.name;
-  el("p-meta").textContent = s.student_id + " \u00b7 " + s.email;
-  el("p-device").textContent = "\u{1F4F1} " + s.registered_device_id;
+  el("p-meta").textContent = s.student_id + " · " + (s.email || "");
+  const avatar = document.querySelector("#sp-home .avatar");
+  if (avatar) avatar.textContent = (s.name || "S").trim().charAt(0).toUpperCase() || "S";
+  el("p-device").textContent = "Device " + s.registered_device_id;
   el("p-class").textContent = "Class " + s.class_id;
   el("relay-mode").checked = s.relay_active_for != null;
   const posSel = el("sim-position");
@@ -140,8 +143,8 @@ function bleCapability() {
 function updateBleStatus() {
   const cap = bleCapability();
   const text = cap.ok
-    ? "🔴 Real BLE available — verification will connect to a real device"
-    : "⚠ " + cap.reason;
+    ? "Real BLE available — verification will attempt a real device connection"
+    : cap.reason;
   const cls = "badge " + (cap.ok ? "ok" : "warn");
   const b1 = el("ble-status");
   if (b1) { b1.textContent = text; b1.className = cls; }
@@ -209,10 +212,10 @@ function renderScanResult() {
     '<div class="step"><small>' + esc(myPosition() === "outside"
       ? "Simulated position is OUTSIDE — direct link is expected to fail. Use the relay path below."
       : (cap.ok
-        ? "🔴 Online mode: a real Web Bluetooth connection will be attempted when you verify."
+        ? "Real BLE mode: a Web Bluetooth connection will be attempted when you verify."
         : cap.reason + ".")) + "</small></div>" +
-    '<button class="btn primary block" id="btn-verify-direct">VERIFY MY PRESENCE</button>' +
-    '<button class="btn block" id="btn-verify-relay">🔁 VERIFY VIA RELAY</button>';
+    '<button class="btn primary block" id="btn-verify-direct">Verify My Presence</button>' +
+    '<button class="btn block" id="btn-verify-relay">Verify via Relay</button>';
   el("btn-verify-direct").addEventListener("click", () => beginVerification("DIRECT"));
   el("btn-verify-relay").addEventListener("click", () => attemptRelay());
 }
