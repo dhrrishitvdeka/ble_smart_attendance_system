@@ -36,6 +36,14 @@ function randHex(n) {
   return [...a].map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 function now() { return Date.now(); }
+/* Spotlight "More ..." toggle on the landing page */
+function toggleSpotlight() {
+  const extra = el("spot-extra");
+  const link = el("spot-toggle");
+  if (!extra || !link) return;
+  const hidden = extra.classList.toggle("hidden");
+  link.textContent = hidden ? "More ..." : "Less";
+}
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

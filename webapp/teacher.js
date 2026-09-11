@@ -22,7 +22,14 @@ function syncFromStorage() {
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   const n = el(id);
-  if (n) n.classList.add("active");
+  if (!n) return;
+  n.classList.add("active");
+  /* Move screen-reader focus to the screen heading (no keyboard popup) */
+  const h = n.querySelector("h1,h2,h3");
+  if (h) {
+    if (!h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
+    h.focus({ preventScroll: true });
+  }
 }
 
 function clearExpiryTimer() {

@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BLE Smart Classroom Attendance System</title>
-<link rel="stylesheet" href="styles.css?v=vtop-1" />
+<link rel="stylesheet" href="styles.css?v=vtop-2" />
 </head>
 <body>
 
@@ -44,10 +44,11 @@
       </button>
     </div>
     <div class="spotlight">
-      <div class="spotlight-head"><span>Spotlight</span><a href="#" onclick="return false">More ...</a></div>
+      <div class="spotlight-head"><span>Spotlight</span><a href="#" id="spot-toggle" onclick="toggleSpotlight();return false">More ...</a></div>
       <ul>
         <li><span class="bolt">&#9889;</span><span>VERIFICATION CHAIN: AUTHENTICATION &rarr; REGISTERED DEVICE &rarr; CURRENT SESSION &rarr; CHALLENGE-RESPONSE &rarr; TEACHER FINALIZES &rarr; PRESENT</span></li>
         <li><span class="bolt">&#9889;</span><span>DEMO ACCOUNTS &mdash; ADMIN <code>A001 / admin123</code> &middot; TEACHER <code>T001 / teach123</code> &middot; STUDENTS <code>S001&ndash;S006 / stud123</code>. SERVE OVER <code>http://localhost</code> FOR WEB BLUETOOTH.</span></li>
+        <li class="hidden" id="spot-extra"><span class="bolt">&#9889;</span><span>OUTSIDE THE CLASSROOM? SET YOUR POSITION TO "OUTSIDE", ASK A CLASSMATE TO ENABLE RELAY MODE, THEN USE "VERIFY VIA RELAY". RELAYS FORWARD MESSAGES ONLY AND NEVER MARK ATTENDANCE.</span></li>
       </ul>
     </div>
     <p class="disclaimer">Unverified students remain NOT VERIFIED, never auto-absent. Relays forward messages only and never authorize attendance.</p>
@@ -59,8 +60,8 @@
   <form class="auth-box" onsubmit="adminLogin();return false">
     <h2>Admin Login</h2>
     <p class="sub">Restricted to academic administration staff.</p>
-    <label for="a-id">Admin ID<input id="a-id" placeholder="A001" autocomplete="username" /></label>
-    <label for="a-pass">Password<input id="a-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" /></label>
+    <label for="a-id">Admin ID<input id="a-id" placeholder="A001" autocomplete="username" required /></label>
+    <label for="a-pass">Password<input id="a-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" required /></label>
     <div id="a-login-msg" class="msg" role="status"></div>
     <button class="btn primary block" type="submit">Login</button>
     <button class="btn ghost block" type="button" onclick="showScreen('screen-role')">Back</button>
@@ -146,8 +147,8 @@
   <form class="auth-box" onsubmit="teacherLogin();return false">
     <h2>Teacher Login</h2>
     <p class="sub">Use the ID issued by the admin office.</p>
-    <label for="t-id">Teacher ID<input id="t-id" placeholder="T001" autocomplete="username" /></label>
-    <label for="t-pass">Password<input id="t-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" /></label>
+    <label for="t-id">Teacher ID<input id="t-id" placeholder="T001" autocomplete="username" required /></label>
+    <label for="t-pass">Password<input id="t-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" required /></label>
     <div id="t-login-msg" class="msg" role="status"></div>
     <button class="btn primary block" type="submit">Login</button>
     <button class="btn ghost block" type="button" onclick="showScreen('screen-role')">Back</button>
@@ -213,8 +214,8 @@
   <form class="auth-box phone-frame" onsubmit="studentLogin();return false">
     <h2>Student Login</h2>
     <p class="sub">Attendance is bound to your registered device.</p>
-    <label for="st-id">Student ID<input id="st-id" placeholder="S001" autocomplete="username" /></label>
-    <label for="st-pass">Password<input id="st-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" /></label>
+    <label for="st-id">Student ID<input id="st-id" placeholder="S001" autocomplete="username" required /></label>
+    <label for="st-pass">Password<input id="st-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" required /></label>
     <div id="st-login-msg" class="msg" role="status"></div>
     <button class="btn primary block" type="submit">Login</button>
     <button class="btn ghost block" type="button" onclick="showScreen('screen-role')">Back</button>
@@ -293,9 +294,9 @@
 
 <div class="page-footer">BLE-assisted verification &middot; Unverified students are never auto-marked absent</div>
 
-<script src="core.js?v=vtop-1"></script>
-<script src="admin.js?v=vtop-1"></script>
-<script src="teacher.js?v=vtop-1"></script>
-<script src="student.js?v=vtop-1"></script>
+<script src="core.js?v=vtop-2"></script>
+<script src="admin.js?v=vtop-2"></script>
+<script src="teacher.js?v=vtop-2"></script>
+<script src="student.js?v=vtop-2"></script>
 </body>
 </html>
