@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BLE Smart Classroom Attendance System</title>
-<link rel="stylesheet" href="styles.css?v=vtop-3" />
+<link rel="stylesheet" href="styles.css?v=vtop-4" />
 </head>
 <body>
 
@@ -20,6 +20,7 @@
   <div class="hero">
     <div class="hero-title">BLE Smart Classroom Attendance System</div>
     <p class="hero-sub">One common platform for faculty and students to record and verify classroom attendance.<br /><small>Teacher device is the trusted root and final attendance authority. BLE detection alone is never treated as presence.</small></p>
+    <div class="landing-grid">
     <div class="role-cards">
       <button class="card" data-role="student">
         <span class="card-icon" aria-hidden="true">
@@ -43,13 +44,14 @@
         <span class="card-login">&#8594;</span>
       </button>
     </div>
-    <div class="spotlight">
+    <aside class="spotlight">
       <div class="spotlight-head"><span>Spotlight</span><a href="#" id="spot-toggle" onclick="toggleSpotlight();return false">More ...</a></div>
-      <ul>
-        <li><span class="bolt">&#9889;</span><span>VERIFICATION CHAIN: AUTHENTICATION &rarr; REGISTERED DEVICE &rarr; CURRENT SESSION &rarr; CHALLENGE-RESPONSE &rarr; TEACHER FINALIZES &rarr; PRESENT</span></li>
-        <li><span class="bolt">&#9889;</span><span>DEMO ACCOUNTS &mdash; ADMIN <code>A001 / admin123</code> &middot; TEACHER <code>T001 / teach123</code> &middot; STUDENTS <code>S001&ndash;S006 / stud123</code>. SERVE OVER <code>http://localhost</code> FOR WEB BLUETOOTH.</span></li>
-        <li class="hidden" id="spot-extra"><span class="bolt">&#9889;</span><span>OUTSIDE THE CLASSROOM? SET YOUR POSITION TO "OUTSIDE", ASK A CLASSMATE TO ENABLE RELAY MODE, THEN USE "VERIFY VIA RELAY". RELAYS FORWARD MESSAGES ONLY AND NEVER MARK ATTENDANCE.</span></li>
+      <ul class="timeline">
+        <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Verification chain</span>AUTHENTICATION &rarr; REGISTERED DEVICE &rarr; CURRENT SESSION &rarr; CHALLENGE-RESPONSE &rarr; TEACHER FINALIZES &rarr; PRESENT</span></li>
+        <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Demo accounts</span>ADMIN <code>A001 / admin123</code> &middot; TEACHER <code>T001 / teach123</code> &middot; STUDENTS <code>S001&ndash;S006 / stud123</code>. SERVE OVER <code>http://localhost</code> FOR WEB BLUETOOTH.</span></li>
+        <li class="hidden" id="spot-extra"><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Outside classroom</span>SET POSITION TO "OUTSIDE", ASK A CLASSMATE TO ENABLE RELAY MODE, THEN USE "VERIFY VIA RELAY". RELAYS FORWARD ONLY.</span></li>
       </ul>
+    </aside>
     </div>
     <p class="disclaimer">Unverified students remain NOT VERIFIED, never auto-absent. Relays forward messages only and never authorize attendance.</p>
   </div>
