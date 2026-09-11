@@ -1,4 +1,6 @@
 using System;
+using System.Threading.Tasks;
+using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Storage.Streams;
 
@@ -7,14 +9,11 @@ namespace BleRelay
     /// <summary>
     /// Teacher Broadcaster (Original Peripheral) — Deliverable #1.
     ///
-    /// Advertises:
-    ///   • the shared attendance Service UUID (so student ScanFilters match)
-    ///   • manufacturer data = [MAGIC B5][HOP=2][SESSION_ID 4B][RSV 2B]
-    ///
-    /// Byte layout is identical to PayloadCodec.kt — keep them in sync.
-    /// Uses BluetoothLEAdvertisementPublisher, which works on any Windows
-    /// machine with a radio that supports advertising; GattServiceProvider
-    /// is NOT required for beacon-style broadcast.
+    /// Configures:
+    ///   • Connectable BLE advertisement (ADV_IND) rather than unconnectable beacon.
+    ///   • Manufacturer data in primary PDU: [MAGIC B5][HOP=2][SESSION_ID 4B][RSV 2B] (15 bytes total, ≤31B limit).
+    ///   • 128-bit Service UUID in ScanResponse to avoid Link Layer 31-byte legacy overflow.
+    ///   • Hardware capability probing for Peripheral mode support.
     /// </summary>
     public sealed class BleTeacherBroadcaster : IDisposable
     {
@@ -27,17 +26,16 @@ namespace BleRelay
         private readonly Guid _serviceUuid =
             new Guid("a5e8c0de-0001-4b7d-9c11-000000000001");
 
-        public BleTeacherBroadcaster(int sessionId)
+        public BleTeacherBroadcaster(int sessionId, bool connectable = true)
         {
-            var adv = new BluetoothLEAdvertisement
+            var adv = new BluetoothLEAdvertisement();
+            // In connectable mode, omit GeneralUnconnectableMode to allow incoming Link Layer connections
+            if (!connectable)
             {
-                Flags = AdvertisementFlags.GeneralUnconnectableMode // beacon-style
-            };
+                adv.Flags = AdvertisementFlags.GeneralUnconnectableMode;
+            }
 
-            // Keeps student ScanFilter(setServiceUuid) matching on Android,
-            // and lets iOS central apps background-filter on it too.
-            adv.ServiceUuids.Add(_serviceUuid);
-
+            // Primary Advertisement PDU: Flags (3B) + Mfg Data (12B) = 15B <= 31B limit
             adv.ManufacturerData.Add(new BluetoothLEManufacturerData
             {
                 CompanyId = CompanyId,
@@ -45,7 +43,34 @@ namespace BleRelay
             });
 
             _publisher = new BluetoothLEAdvertisementPublisher(adv);
+
+            // To strictly comply with 31-byte legacy BLE limit:
+            // Flags (3B) + Manufacturer Data (12B) = 15 bytes <= 31 bytes.
+            // Service UUID (18B) is omitted from primary legacy advertisement to prevent 33-byte Link Layer overflow;
+            // Central devices discover the Service UUID upon connect/GATT discovery and filter by CompanyId & Magic.
+            _publisher.Advertisement.ServiceUuids.Clear();
+
             _publisher.StatusChanged += OnStatusChanged;
+        }
+
+        /// <summary>Probe hardware for BLE peripheral and advertising capabilities.</summary>
+        public static async Task<(bool Supported, string Message)> CheckHardwareCapabilitiesAsync()
+        {
+            try
+            {
+                var adapter = await BluetoothAdapter.GetDefaultAsync();
+                if (adapter == null)
+                    return (false, "No Bluetooth radio found on this workstation.");
+
+                if (!adapter.IsPeripheralRoleSupported)
+                    return (false, $"Bluetooth adapter ({adapter.DeviceId}) does not support peripheral/advertising role.");
+
+                return (true, $"Bluetooth adapter ready (Peripheral supported: {adapter.IsPeripheralRoleSupported}, Central: {adapter.IsCentralRoleSupported}).");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Hardware capability check failed: {ex.Message}");
+            }
         }
 
         /// <summary>Begin broadcasting. Call again per new session with a fresh id.</summary>

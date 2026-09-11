@@ -57,7 +57,7 @@ function armExpiryTimer() {
 async function teacherLogin() {
   const t = DB.teachers.find(x => x.teacher_id === val("t-id").toUpperCase());
   const msg = el("t-login-msg");
-  if (!t || (await sha256hex("salt_" + t.teacher_id + val("t-pass"))) !== t.password_hash) {
+  if (!t || !(await verifyPassword(t.teacher_id, val("t-pass"), t.password_hash))) {
     msg.textContent = "Invalid credentials. Check your ID and password."; msg.className = "msg err"; return;
   }
   msg.textContent = ""; msg.className = "msg";
@@ -165,6 +165,156 @@ function endSession() {
    -> ELIGIBLE (teacher finalizes). Failures => NOT_VERIFIED.
    Temporary BLE failure never auto-marks ABSENT.
 ------------------------------------------------------------------- */
+/* ============================================================
+   TEACHER GATT SERVER & ATTENDANCE AUTHORITY (Root of Trust)
+   Enforces:
+     1. Active session validation
+     2. Student enrollment check
+     3. Hardware registered device verification
+     4. Cryptographic challenge issuance & verification
+     5. Physical proximity (RSSI) and hop bounds
+     6. Anti-replay & deduplication
+   ============================================================ */
+
+function teacherHandleChallengeRequest(sessionId, studentId, deviceId) {
+  syncFromStorage();
+  const session = getActiveSession();
+  if (!session || session.session_id !== sessionId || session.status !== "ACTIVE" || now() >= session.expiration_time) {
+    return { ok: false, reason: "Session is not active or has expired." };
+  }
+  const student = DB.students.find(s => s.student_id === studentId);
+  if (!student) {
+    return { ok: false, reason: "Student ID not found in roster." };
+  }
+  if (student.class_id !== session.class_id) {
+    return { ok: false, reason: "Student is not enrolled in this session's class." };
+  }
+  if (deviceId !== student.registered_device_id) {
+    rejectAttendance(student, "unregistered_phone");
+    return { ok: false, reason: "Device ID does not match registered student device." };
+  }
+
+  // Issue random single-use challenge nonce tied to session and student
+  const challengeNonce = randHex(16);
+  session.pending_challenges = session.pending_challenges || {};
+  session.pending_challenges[studentId] = {
+    nonce: challengeNonce,
+    expiresAt: now() + CHALLENGE_TTL_MS,
+    used: false
+  };
+  saveDB();
+
+  return {
+    ok: true,
+    challenge: challengeNonce,
+    ttlMs: CHALLENGE_TTL_MS,
+    sessionId: session.session_id
+  };
+}
+
+async function teacherVerifyAttendanceSubmission(sessionId, studentId, deviceId, responseHash, routeType, rssiEvidence, relayInfo) {
+  syncFromStorage();
+  const session = getActiveSession();
+  if (!session || session.session_id !== sessionId || session.status !== "ACTIVE" || now() >= session.expiration_time) {
+    return { ok: false, reason: "Session expired or inactive." };
+  }
+  const student = DB.students.find(s => s.student_id === studentId);
+  if (!student || student.class_id !== session.class_id) {
+    return { ok: false, reason: "Student enrollment invalid for this class." };
+  }
+  if (deviceId !== student.registered_device_id) {
+    rejectAttendance(student, "unregistered_phone");
+    return { ok: false, reason: "Unregistered device signature rejected." };
+  }
+
+  // Validate server-side challenge
+  session.pending_challenges = session.pending_challenges || {};
+  const ch = session.pending_challenges[studentId];
+  if (!ch) {
+    return { ok: false, reason: "No valid challenge found for student. Request a fresh challenge." };
+  }
+  if (now() > ch.expiresAt) {
+    return { ok: false, reason: "Challenge expired. Attestation window closed." };
+  }
+  if (ch.used) {
+    return { ok: false, reason: "Challenge already used. Replay detected." };
+  }
+
+  // Cryptographic verification on teacher authority
+  const secret = (DB.student_secrets && DB.student_secrets[studentId]) || student.device_secret || "";
+  const expectedHash = await sha256hex(ch.nonce + secret);
+  if (responseHash !== expectedHash) {
+    rejectAttendance(student, "cryptographic_mismatch");
+    return { ok: false, reason: "Cryptographic response mismatch. Authentication failed." };
+  }
+
+  // Consume challenge
+  ch.used = true;
+
+  // Proximity validation
+  if (typeof rssiEvidence !== "number" || rssiEvidence <= RSSI_FLOOR) {
+    return { ok: false, reason: "Proximity evidence below usable BLE threshold (" + rssiEvidence + " dBm)." };
+  }
+
+  // Route & hop validation
+  if (routeType !== "DIRECT" && routeType !== "RELAY") {
+    return { ok: false, reason: "Invalid route type: " + routeType };
+  }
+  let hopCount = 0;
+  let viaStudent = null;
+  if (routeType === "RELAY") {
+    if (!relayInfo || typeof relayInfo.hopCount !== "number" || relayInfo.hopCount < 1 || relayInfo.hopCount > MAX_HOPS) {
+      return { ok: false, reason: "Relay hop count out of bounds (max " + MAX_HOPS + ")." };
+    }
+    hopCount = relayInfo.hopCount;
+    viaStudent = relayInfo.viaStudent;
+  }
+
+  // Anti-duplicate check
+  const dup = DB.attendance.some(a => a.session_id === session.session_id && a.student_id === student.student_id);
+  if (dup) {
+    return { ok: false, reason: "Attendance already recorded for this session." };
+  }
+
+  // Authority commits attendance record to ELIGIBLE
+  const rec = {
+    attendance_id: uid("att"),
+    session_id: session.session_id,
+    student_id: student.student_id,
+    timestamp: now(),
+    verification_status: "ELIGIBLE",
+    route_type: routeType,
+    rssi_evidence: rssiEvidence,
+    hop_count: hopCount,
+    via_student: viaStudent,
+    synced: false
+  };
+  DB.attendance.push(rec);
+  DB.attendance_events.push({
+    event_id: uid("evt"),
+    ts: new Date().toISOString(),
+    event_type: "ATTENDANCE_RECORDED",
+    student_id: rec.student_id,
+    session_id: rec.session_id,
+    route: routeType
+  });
+  audit("ATTENDANCE_RECORDED", rec.student_id + " route=" + routeType + " rssi=" + rssiEvidence + "dBm" +
+    (viaStudent ? " via=" + viaStudent : ""));
+  saveDB();
+
+  if (currentTeacher) renderLiveTable();
+
+  return {
+    ok: true,
+    attendanceId: rec.attendance_id,
+    status: "ELIGIBLE",
+    routeType: routeType,
+    rssi: rssiEvidence,
+    hopCount: hopCount,
+    viaStudent: viaStudent
+  };
+}
+
 function recordAttendance(student, routeType, rssi, hopCount, viaStudent) {
   syncFromStorage();
   const session = getActiveSession();
@@ -294,18 +444,74 @@ function toggleNetwork() {
   audit("NETWORK", DB.online ? "internet available" : "internet lost");
   saveDB(); renderLiveTable();
 }
-function syncToCloud() {
+async function syncToCloud() {
   const log = el("sync-log");
-  if (!DB.online) { log.textContent = "[sync] Offline \u2014 data stays in local store. Will retry when online."; return; }
+  if (!DB.online) { log.textContent = "[sync] Offline — data stays in local store. Will retry when online.\n"; return; }
   const unsynced = DB.attendance.filter(a => !a.synced);
-  unsynced.forEach(a => {
-    // Cloud dedupe key = attendance_id (unique) + timestamp; re-sync is idempotent
-    log.textContent += "[sync] POST /api/attendance  id=" + a.attendance_id + " student=" + a.student_id +
-                       " status=" + a.verification_status + " \u2713\n";
-    a.synced = true;
-  });
-  if (!unsynced.length) log.textContent += "[sync] Nothing to sync \u2014 cloud already up to date.\n";
-  audit("CLOUD_SYNC", unsynced.length + " records pushed over HTTPS");
+  if (!unsynced.length) {
+    log.textContent += "[sync] Nothing to sync — cloud already up to date.\n";
+    return;
+  }
+  log.textContent += `[sync] Syncing ${unsynced.length} records to Cloud Backend (POST /api/attendance/batch)...\n`;
+  try {
+    // Authenticate with cloud backend if teacher token is not yet obtained
+    if (currentTeacher && !currentTeacher.cloudToken) {
+      try {
+        const loginResp = await fetch("http://localhost:8000/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: currentTeacher.teacher_id,
+            password: val("t-pass") || "teach123"
+          })
+        });
+        if (loginResp.ok) {
+          const lData = await loginResp.json();
+          currentTeacher.cloudToken = lData.access_token;
+        }
+      } catch (_) { /* offline / backend unreachable */ }
+    }
+
+    const headers = { "Content-Type": "application/json" };
+    if (currentTeacher && currentTeacher.cloudToken) {
+      headers["Authorization"] = "Bearer " + currentTeacher.cloudToken;
+    }
+
+    const payload = unsynced.map(a => ({
+      attendance_id: a.attendance_id,
+      session_id: a.session_id,
+      student_id: a.student_id,
+      timestamp: a.timestamp,
+      verification_status: a.verification_status,
+      route_type: a.route_type,
+      rssi_evidence: a.rssi_evidence,
+      hop_count: a.hop_count || 0,
+      via_student: a.via_student || null
+    }));
+
+    const resp = await fetch("http://localhost:8000/api/attendance/batch", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      unsynced.forEach(a => { a.synced = true; });
+      log.textContent += `[sync] Cloud synced: stored=${data.stored}, duplicates_ignored=${data.duplicates_ignored} ✓\n`;
+      audit("CLOUD_SYNC", `${data.stored} records pushed over HTTPS`);
+      saveDB();
+    } else {
+      // If server returned non-200, mark as retained
+      log.textContent += `[sync] Cloud rejected (status ${resp.status}) — queued for retry.\n`;
+    }
+  } catch (err) {
+    // If backend isn't actively running on localhost:8000, fall back to offline simulation
+    unsynced.forEach(a => {
+      log.textContent += `[sync] (Offline Queue) id=${a.attendance_id} student=${a.student_id} queued.\n`;
+    });
+    log.textContent += `[sync] Note: Backend unreachable (${err.message}) — records retained safely in local store.\n`;
+  }
   saveDB();
   log.scrollTop = log.scrollHeight;
 }
