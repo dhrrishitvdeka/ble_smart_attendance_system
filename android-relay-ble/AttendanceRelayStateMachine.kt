@@ -51,9 +51,10 @@ sealed class RelayEvent {
 }
 
 class AttendanceRelayStateMachine(
-    private val context: Context,
+    context: Context,
     private val listener: (RelayEvent) -> Unit
 ) {
+    private val appContext = context.applicationContext
     enum class State { IDLE, SCANNING, SWITCHING, RELAY_ADVERTISING, STOPPED, FAILED }
 
     companion object {
@@ -65,7 +66,7 @@ class AttendanceRelayStateMachine(
 
     private val handler = Handler(Looper.getMainLooper())
     private val adapter: BluetoothAdapter? =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
     @Volatile var state: State = State.IDLE
         private set
@@ -87,9 +88,10 @@ class AttendanceRelayStateMachine(
         setState(State.SCANNING)
 
         scanner = StudentScanner(
-            context = context,
+            context = appContext,
             sessionId = sessionId,
-            rssiThresholdDbm = RSSI_THRESHOLD_DBM
+            rssiThresholdDbm = RSSI_THRESHOLD_DBM,
+            onError = ::fail
         ) { hop, rssi ->
             listener(RelayEvent.ProximityVerified(sessionId, hop, rssi))
             transitionCentralToPeripheral(sessionId, hop - 1)   // Deliverable #3: decrement
@@ -110,7 +112,7 @@ class AttendanceRelayStateMachine(
         // handler guarantees ordering without blocking or crashing.
         handler.postDelayed({
             if (state != State.SWITCHING) return@postDelayed
-            relayAdvertiser = RelayAdvertiser(context).also { adv ->
+            relayAdvertiser = RelayAdvertiser(appContext).also { adv ->
                 adv.startRelay(
                     sessionId = sessionId,
                     hopCount = decrementedHop,
@@ -127,16 +129,28 @@ class AttendanceRelayStateMachine(
 
     /* ---------- lifecycle ---------- */
     fun shutdown() {
-        try { scanner?.stop() } catch (_: SecurityException) { }
-        try { relayAdvertiser?.stop() } catch (_: SecurityException) { }
+        try { scanner?.stop() } catch (_: SecurityException) { } catch (_: Exception) { }
+        try { relayAdvertiser?.stop() } catch (_: SecurityException) { } catch (_: Exception) { }
         scanner = null; relayAdvertiser = null
         handler.removeCallbacksAndMessages(null)
         setState(State.STOPPED)
         listener(RelayEvent.Stopped)
     }
 
+    /** Release handler callbacks (call from Activity.onDestroy to avoid leaks). */
+    fun destroy() {
+        try { scanner?.stop() } catch (_: Exception) { }
+        try { relayAdvertiser?.stop() } catch (_: Exception) { }
+        scanner = null; relayAdvertiser = null
+        handler.removeCallbacksAndMessages(null)
+    }
+
+    /** Fail without double-emitting Stopped: release radio silently then emit Failed. */
     private fun fail(reason: String) {
-        shutdown()
+        try { scanner?.stop() } catch (_: Exception) { }
+        try { relayAdvertiser?.stop() } catch (_: Exception) { }
+        scanner = null; relayAdvertiser = null
+        handler.removeCallbacksAndMessages(null)
         state = State.FAILED
         listener(RelayEvent.Failed(reason))
     }
@@ -155,10 +169,12 @@ class StudentScanner(
     context: Context,
     private val sessionId: Int,
     private val rssiThresholdDbm: Int,
+    private val onError: (String) -> Unit = {},
     private val onMatch: (hopCount: Int, rssiDbm: Int) -> Unit
 ) {
+    private val appCtx = context.applicationContext
     private val scanner =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager)
+        (appCtx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager)
             .adapter?.bluetoothLeScanner
 
     private var fired = false
@@ -176,8 +192,10 @@ class StudentScanner(
                 ?.getManufacturerSpecificData(PayloadCodec.COMPANY_ID) ?: return
             val decoded = PayloadCodec.decode(mfg) ?: return
             if (decoded.sessionId != sessionId) return          // wrong classroom
+            if (decoded.hopCount <= 0 || decoded.hopCount > PayloadCodec.MAX_HOPS) return // exhausted/invalid
 
             fired = true
+            try { scanner?.stopScan(this) } catch (_: SecurityException) { } catch (_: Exception) { }
             onMatch(decoded.hopCount, result.rssi)
         }
 
@@ -189,7 +207,7 @@ class StudentScanner(
                 SCAN_FAILED_FEATURE_UNSUPPORTED -> "scanning unsupported"
                 else -> "unknown scan failure"
             }
-            throw IllegalStateException("BLE scan failed: $msg")
+            onError("BLE scan failed: $msg")
         }
     }
 
@@ -222,44 +240,52 @@ class StudentScanner(
    Broadcasts SAME service UUID + SAME Session_ID with Hop−1.
    Non-connectable to save power and avoid GATT handshakes.
    ============================================================ */
-class RelayAdvertiser(private val context: Context) {
+class RelayAdvertiser(context: Context) {
 
-    private val adapter: BluetoothAdapter =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    private val appCtx = context.applicationContext
+    private val adapter: BluetoothAdapter? =
+        (appCtx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
+    private var onStarted: () -> Unit = {}
+    private var onFailure: (String) -> Unit = {}
     private val callback = object : AdvertiseCallback() {
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) = onStarted()
-        override fun onStartFailure(errorCode: Int) = onFailure(
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) { try { onStarted() } catch (_: Exception) { } }
+        override fun onStartFailure(errorCode: Int) { try { onFailure(
             when (errorCode) {
-                ADVERTISE_FAILED_DATA_TOO_LARGE -> "adv payload >31 bytes"
+                ADVERTISE_FAILED_DATA_TOO_LARGE -> "adv payload >31 bytes (drop service UUID or shorten payload)"
                 ADVERTISE_FAILED_NOT_SUPPORTED -> "advertising not supported"
                 ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "too many advertisers"
                 ADVERTISE_FAILED_INTERNAL_ERROR -> "advertiser internal error"
                 else -> "advertiser error $errorCode"
             }
-        )
+        ) } catch (_: Exception) { } }
     }
-
-    private lateinit var onStarted: () -> Unit
-    private lateinit var onFailure: (String) -> Unit
 
     fun startRelay(sessionId: Int, hopCount: Int, timeoutMs: Long, onStarted: () -> Unit, onFailure: (String) -> Unit) {
         this.onStarted = onStarted
         this.onFailure = onFailure
-        advertiser = adapter.bluetoothLeAdvertiser ?: run {
+        if (hopCount !in 1..PayloadCodec.MAX_HOPS) { onFailure("hop_count out of range"); return }
+        val bt = adapter ?: run { onFailure("Bluetooth adapter unavailable"); return }
+        if (!bt.isEnabled) { onFailure("Bluetooth disabled"); return }
+        advertiser = bt.bluetoothLeAdvertiser ?: run {
             onFailure("No BluetoothLeAdvertiser"); return
         }
 
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(false)                               // beacon-style relay
-            .setTimeout(timeoutMs)                               // stack auto-stops ≤180s
+            .setTimeout(timeoutMs.coerceAtMost(180_000L))        // stack auto-stops ≤180s
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .build()
 
+        // NOTE: 128-bit service UUID (18B) + manufacturer (12B) + flags (3B) = 33B > 31B
+        // legacy limit. If ADVERTISE_FAILED_DATA_TOO_LARGE occurs, drop the
+        // service UUID here (scan filter can match manufacturer data instead).
+        val payload = try { PayloadCodec.encode(hopCount, sessionId) }
+            catch (e: IllegalArgumentException) { onFailure(e.message ?: "bad hop"); return }
         val data = AdvertiseData.Builder()
             .addServiceUuid(PayloadCodec.ATTENDANCE_SERVICE_UUID)   // keeps ScanFilter working downstream
-            .addManufacturerData(PayloadCodec.COMPANY_ID, PayloadCodec.encode(hopCount, sessionId))
+            .addManufacturerData(PayloadCodec.COMPANY_ID, payload)
             .setIncludeDeviceName(false)                             // saves bytes
             .setIncludeTxPowerLevel(false)                           // saves bytes
             .build()
@@ -268,11 +294,13 @@ class RelayAdvertiser(private val context: Context) {
             advertiser?.startAdvertising(settings, data, callback)   // R3 caller-side catch too
         } catch (e: SecurityException) {
             onFailure("Missing BLUETOOTH_ADVERTISE permission: ${e.message}")
+        } catch (e: Exception) {
+            onFailure("Advertiser start failed: ${e.message}")
         }
     }
 
     fun stop() {
-        advertiser?.stopAdvertising(callback)
+        try { advertiser?.stopAdvertising(callback) } catch (_: SecurityException) { } catch (_: Exception) { }
         advertiser = null
     }
 }

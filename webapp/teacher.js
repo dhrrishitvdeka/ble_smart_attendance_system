@@ -21,7 +21,30 @@ function syncFromStorage() {
 
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  el(id).classList.add("active");
+  const n = el(id);
+  if (n) n.classList.add("active");
+}
+
+function clearExpiryTimer() {
+  if (expiryTimer) { clearInterval(expiryTimer); expiryTimer = null; }
+}
+function armExpiryTimer() {
+  clearExpiryTimer();
+  expiryTimer = setInterval(() => {
+    if (!activeSession) { clearExpiryTimer(); return; }
+    syncFromStorage();
+    if (!activeSession) { clearExpiryTimer(); return; }
+    const left = activeSession.expiration_time - now();
+    if (left <= 0) {
+      activeSession.status = "EXPIRED";
+      audit("SESSION_EXPIRED", activeSession.session_id);
+      saveDB(); updateSessionStatusUI();
+      clearExpiryTimer();
+    } else {
+      const n = el("s-expiry");
+      if (n) n.textContent = Math.ceil(left / 1000) + "s";
+    }
+  }, 500);
 }
 
 async function teacherLogin() {
@@ -51,7 +74,7 @@ async function teacherLogin() {
 /* Restore an ACTIVE session from the shared DB (page refresh / other tab) */
 function restoreSession() {
   const s = getActiveSession();
-  if (!s || currentTeacher.teacher_id !== s.teacher_id) return;
+  if (!s || !currentTeacher || currentTeacher.teacher_id !== s.teacher_id) return;
   activeSession = s;
   el("setup-panel").classList.add("hidden");
   el("session-panel").classList.remove("hidden");
@@ -61,28 +84,19 @@ function restoreSession() {
   el("s-nonce").textContent = s.random_nonce;
   updateSessionStatusUI();
 
-  expiryTimer = setInterval(() => {
-    if (!activeSession) { clearInterval(expiryTimer); return; }
-    const left = activeSession.expiration_time - now();
-    if (left <= 0) {
-      activeSession.status = "EXPIRED";
-      audit("SESSION_EXPIRED", activeSession.session_id);
-      saveDB(); updateSessionStatusUI(); stopScan();
-      clearInterval(expiryTimer);
-    } else {
-      el("s-expiry").textContent = Math.ceil(left / 1000) + "s";
-    }
-  }, 500);
+  armExpiryTimer();
 }
 
 function teacherLogout() {
-  if (activeSession) endSession();
+  if (activeSession && currentTeacher && activeSession.teacher_id === currentTeacher.teacher_id) endSession();
+  clearExpiryTimer();
   currentTeacher = null;
   showScreen("screen-role");
 }
 
 /* ---- Session creation (spec §4): temporary, random, expiring ---- */
 function startSession() {
+  if (!currentTeacher) { alert("Login as teacher first."); return; }
   syncFromStorage();
   const existing = getActiveSession();
   if (existing) { alert("A session is already active: " + existing.session_id); return; }
@@ -104,24 +118,13 @@ function startSession() {
 
   el("setup-panel").classList.add("hidden");
   el("session-panel").classList.remove("hidden");
-  el("s-class").textContent = cls.class_name;
+  el("s-class").textContent = cls.class_id;
   el("s-subject").textContent = cls.subject;
   el("s-id").textContent = activeSession.session_id;
   el("s-nonce").textContent = activeSession.random_nonce;
   updateSessionStatusUI();
 
-  expiryTimer = setInterval(() => {
-    if (!activeSession) { clearInterval(expiryTimer); return; }
-    const left = activeSession.expiration_time - now();
-    if (left <= 0) {
-      activeSession.status = "EXPIRED";
-      audit("SESSION_EXPIRED", activeSession.session_id);
-      saveDB(); updateSessionStatusUI(); stopScan();
-      clearInterval(expiryTimer);
-    } else {
-      el("s-expiry").textContent = Math.ceil(left / 1000) + "s";
-    }
-  }, 500);
+  armExpiryTimer();
   renderLiveTable();
 }
 
@@ -134,12 +137,14 @@ function updateSessionStatusUI() {
 
 function endSession() {
   if (!activeSession) return;
+  if (!currentTeacher) return;
   syncFromStorage();
+  if (!activeSession) return;
   activeSession.status = "ENDED";
   audit("SESSION_END", activeSession.session_id);
   saveDB();
   activeSession = null;
-  clearInterval(expiryTimer);
+  clearExpiryTimer();
   el("session-panel").classList.add("hidden");
   el("setup-panel").classList.remove("hidden");
   renderLiveTable();
@@ -152,8 +157,15 @@ function endSession() {
    Temporary BLE failure never auto-marks ABSENT.
 ------------------------------------------------------------------- */
 function recordAttendance(student, routeType, rssi, hopCount, viaStudent) {
+  syncFromStorage();
   const session = getActiveSession();
-  if (!session) return;
+  if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) return false;
+  if (!student || student.class_id !== session.class_id) return false;
+  if (routeType !== "DIRECT" && routeType !== "RELAY") return false;
+  if (typeof rssi !== "number" || rssi <= RSSI_FLOOR) return false;
+  if (routeType === "RELAY" && ((hopCount || 0) < 1 || (hopCount || 0) > MAX_HOPS)) return false;
+  const dup = DB.attendance.some(a => a.session_id === session.session_id && a.student_id === student.student_id);
+  if (dup) return false;
   const rec = {
     attendance_id: uid("att"),
     session_id: session.session_id,
@@ -173,11 +185,14 @@ function recordAttendance(student, routeType, rssi, hopCount, viaStudent) {
     (viaStudent ? " via=" + viaStudent : ""));
   saveDB();
   if (currentTeacher) renderLiveTable();
+  return true;
 }
 
 function rejectAttendance(student, reason) {
+  syncFromStorage();
+  if (!student) return;
   DB.attendance_events.push({ event_id: uid("evt"), ts: new Date().toISOString(), event_type: "REQUEST_REJECTED",
-    student_id: student.student_id, session_id: activeSession?.session_id ?? "-", reason });
+    student_id: student.student_id, session_id: activeSession ? activeSession.session_id : "-", reason });
   audit("REQUEST_REJECTED", student.student_id + " reason=" + reason);
   saveDB();
 }
@@ -193,29 +208,35 @@ function rosterStatuses() {
 
 function renderLiveTable() {
   if (!currentTeacher) return;
+  syncFromStorage();
   const body = el("live-body");
+  if (!body) return;
   const rows = rosterStatuses().map(({ st, rec }) => {
     let status, route, rssi, time, reviewBtn = "";
+    const stName = esc(st.name) + ' <small class="muted mono">' + esc(st.student_id) + "</small>";
     if (!rec) {
       status = '<span class="st-NOT_VERIFIED">NOT VERIFIED</span>';
       route = st.relay_active_for === (activeSession && activeSession.session_id) ? "<em>relay ready</em>" : "--";
       rssi = "--"; time = "--";
     } else if (rec.verification_status === "ELIGIBLE") {
       status = '<span class="st-ELIGIBLE">ELIGIBLE</span>';
-      route = rec.route_type === "DIRECT" ? "DIRECT" : "VIA " + (rec.via_student || "?") + " (" + rec.hop_count + " hop)";
-      rssi = proximityLabel(rec.rssi_evidence).label + " (" + rec.rssi_evidence + " dBm)";
-      time = new Date(rec.timestamp).toLocaleTimeString();
-      reviewBtn = '<button class="btn small ghost" onclick="manualOverride(\'' + st.student_id + '\')">Mark Present</button>';
+      route = rec.route_type === "DIRECT" ? "DIRECT" : "VIA " + esc(rec.via_student || "?") + " (" + Number(rec.hop_count || 0) + " hop)";
+      rssi = esc(proximityLabel(rec.rssi_evidence).label) + " (" + Number(rec.rssi_evidence) + " dBm)";
+      time = esc(new Date(rec.timestamp).toLocaleTimeString());
+      reviewBtn = '<button class="btn small ghost" data-override="' + esc(st.student_id) + '">Mark Present</button>';
     } else {
-      status = '<span class="st-' + rec.verification_status + '">' + rec.verification_status + "</span>";
-      route = rec.route_type === "DIRECT" ? "DIRECT" : "VIA " + (rec.via_student || "?");
-      rssi = rec.rssi_evidence != null ? rec.rssi_evidence + " dBm" : "--";
-      time = new Date(rec.timestamp).toLocaleTimeString();
+      const safeStatus = esc(rec.verification_status);
+      status = '<span class="st-' + safeStatus + '">' + safeStatus + "</span>";
+      route = rec.route_type === "DIRECT" ? "DIRECT" : "VIA " + esc(rec.via_student || "?");
+      rssi = rec.rssi_evidence != null ? Number(rec.rssi_evidence) + " dBm" : "--";
+      time = esc(new Date(rec.timestamp).toLocaleTimeString());
     }
-    return "<tr><td>" + st.name + "</td><td>" + status + "</td><td>" + route + "</td><td>" + rssi +
-           '</td><td>verified</td><td>' + time + "</td><td>" + reviewBtn + "</td></tr>";
+    return "<tr><td>" + stName + "</td><td>" + status + "</td><td>" + route + "</td><td>" + rssi +
+           '</td><td><small class="muted">challenge ✓</small></td><td>' + time + "</td><td>" + reviewBtn + "</td></tr>";
   });
   body.innerHTML = rows.join("");
+  body.querySelectorAll("[data-override]").forEach(b =>
+    b.addEventListener("click", () => manualOverride(b.getAttribute("data-override"))));
 
   const n = rosterStatuses();
   const eligible = n.filter(x => x.rec && x.rec.verification_status === "ELIGIBLE").length;
@@ -232,7 +253,9 @@ function renderLiveTable() {
 
 /* Teacher review override before finalize */
 function manualOverride(studentId) {
+  if (!currentTeacher) { alert("Login as teacher first."); return; }
   syncFromStorage();
+  if (!activeSession) return;
   const rec = DB.attendance.find(a => a.session_id === activeSession.session_id && a.student_id === studentId);
   if (rec) {
     rec.verification_status = "PRESENT";
@@ -244,8 +267,10 @@ function manualOverride(studentId) {
 
 /* Finalize: ELIGIBLE -> PRESENT. NOT VERIFIED stays not-verified (never auto-absent). */
 function finalizeAttendance() {
+  if (!currentTeacher) { alert("Login as teacher first."); return; }
   if (!activeSession) return;
   syncFromStorage();
+  if (!activeSession) return;
   let count = 0;
   DB.attendance.filter(a => a.session_id === activeSession.session_id && a.verification_status === "ELIGIBLE")
     .forEach(a => { a.verification_status = "PRESENT"; a.finalized_by = currentTeacher.teacher_id; count++; });

@@ -34,6 +34,7 @@ function adminMsg(id, text, ok) {
 
 /* ---------------- Add teacher ---------------- */
 async function addTeacher() {
+  if (!currentAdmin) return adminMsg("at-msg", "Login as admin first.", false);
   const id = val("at-id").toUpperCase(), name = val("at-name").trim(),
         email = val("at-email").trim(), pass = val("at-pass");
   if (!id || !name || !pass) return adminMsg("at-msg", "ID, name and password are required.", false);
@@ -51,6 +52,7 @@ async function addTeacher() {
 
 /* ---------------- Add class ---------------- */
 function addClass() {
+  if (!currentAdmin) return adminMsg("ac-msg", "Login as admin first.", false);
   const cid = val("ac-id").trim().toUpperCase(), subject = val("ac-subject").trim(),
         tid = el("ac-teacher").value;
   if (!cid || !subject) return adminMsg("ac-msg", "Class ID and subject are required.", false);
@@ -66,10 +68,14 @@ function addClass() {
 
 /* ---------------- Schedule class to teacher ---------------- */
 function addSchedule() {
+  if (!currentAdmin) return adminMsg("as-msg", "Login as admin first.", false);
   const cid = el("as-class").value, tid = el("as-teacher").value,
         day = val("as-day"), start = val("as-start"), end = val("as-end");
   if (!cid || !tid) return adminMsg("as-msg", "Select a class and a teacher.", false);
-  if (day && start && end && start >= end) return adminMsg("as-msg", "Start time must be before end time.", false);
+  function toMin(t) { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ""); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+  const sm = start ? toMin(start) : null, em = end ? toMin(end) : null;
+  if (start && !toMin(start) && start !== "") { /* allow free text but validate when both look like times */ }
+  if (sm != null && em != null && sm >= em) return adminMsg("as-msg", "Start time must be before end time.", false);
   const schedule_id = uid("sch");
   DB.schedules.push({ schedule_id, class_id: cid, teacher_id: tid, day, start_time: start, end_time: end });
   audit("ADMIN_SCHEDULE", cid + " -> " + tid + " " + day + " " + start + "-" + end);
@@ -78,6 +84,7 @@ function addSchedule() {
   renderAdmin();
 }
 function removeSchedule(sid) {
+  if (!currentAdmin) return;
   DB.schedules = DB.schedules.filter(s => s.schedule_id !== sid);
   audit("ADMIN_UNSCHEDULE", sid);
   saveDB(); renderAdmin();
@@ -85,6 +92,7 @@ function removeSchedule(sid) {
 
 /* ---------------- Add student to ONE specific class ---------------- */
 async function addStudent() {
+  if (!currentAdmin) return adminMsg("asn-msg", "Login as admin first.", false);
   const sid = val("asn-id").toUpperCase(), name = val("asn-name").trim(),
         email = val("asn-email").trim(), pass = val("asn-pass"),
         cid = el("asn-class").value;

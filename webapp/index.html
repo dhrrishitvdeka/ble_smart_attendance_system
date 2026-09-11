@@ -214,6 +214,18 @@
         <span class="badge" id="p-device"></span>
         <span class="badge" id="p-class"></span>
       </div>
+      <div class="row" style="justify-content:center;margin-top:10px">
+        <span class="badge warn" id="ble-status">BLE status…</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:10px">
+        <label style="font-size:.8rem">Simulated position
+          <select id="sim-position" style="max-width:220px" onchange="setSimPosition(this.value)">
+            <option value="near">near (strong signal)</option>
+            <option value="back">back of classroom (moderate)</option>
+            <option value="outside">outside classroom (no direct link)</option>
+          </select>
+        </label>
+      </div>
     </div>
     <button class="btn primary block" onclick="gotoScan()">📡 Scan for Class Session</button>
     <button class="btn block" onclick="renderHistory()">📜 Attendance History</button>
@@ -228,8 +240,10 @@
   <section class="phone-page" id="sp-scan">
     <h3>Scanning for teacher session…</h3>
     <div class="scan-anim"><div></div></div>
+    <div id="ble-status-scan" class="badge warn" style="display:block;text-align:center;margin-bottom:10px"></div>
     <div id="scan-result"></div>
-    <button class="btn ghost block" onclick="stopScan()">Cancel</button>
+    <button class="btn primary block" onclick="attemptRelay()">🔁 TRY RELAY PATH (if direct fails)</button>
+    <button class="btn ghost block" onclick="stopScan();studentHome()">Cancel</button>
   </section>
 
   <!-- Verification -->

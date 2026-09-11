@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  webapp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax check webapp JS
+        run: |
+          node --check webapp/core.js
+          node --check webapp/teacher.js
+          node --check webapp/student.js
+          node --check webapp/admin.js
+      - name: Validate shared BLE config matches webapp
+        run: |
+          python3 -c "import json; c=json.load(open('shared/ble_config.json')); assert c['max_hops']==2, c; print('ble_config OK', c['attendance_service'])"
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install backend deps
+        run: pip install -r Backend/requirements.txt
+      - name: Run backend tests
+        run: pytest Backend/tests -q
