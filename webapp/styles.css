@@ -97,18 +97,30 @@ body { font-family: var(--font); background: var(--bg); color: var(--ink); line-
 .card[data-role="teacher"] .card-login { background: var(--teacher); }
 .card[data-role="admin"] .card-login { background: var(--admin); }
 
-/* ---------- Spotlight ---------- */
-.spotlight { background: var(--surface); border: 1px solid #e3e8ef; border-radius: 4px; margin: 6px 4px 0; box-shadow: 0 8px 22px rgba(15,35,70,.12); max-width: 760px; }
+/* ---------- Landing grid: cards left, notice box top-right ---------- */
+.landing-grid { display: grid; grid-template-columns: 1fr 330px; gap: 24px; align-items: start; margin: 26px 4px 0; }
+.landing-grid .role-cards { grid-template-columns: 1fr; margin: 0; }
+
+/* ---------- Spotlight notice box with flowing timeline ---------- */
+.spotlight { background: var(--surface); border: 1px solid #e3e8ef; border-radius: 8px; margin: 0; box-shadow: 0 8px 22px rgba(15,35,70,.12); }
 .spotlight-head {
   display: flex; justify-content: space-between; align-items: center;
   border-bottom: 2px solid var(--spotlight); padding: 8px 16px;
   color: var(--spotlight); font-weight: 700; font-size: 15px;
 }
 .spotlight-head a { color: var(--spotlight); font-weight: 500; font-size: 14px; text-decoration: none; }
-.spotlight ul { list-style: none; padding: 10px 16px 14px; }
-.spotlight li { display: flex; gap: 10px; padding: 10px 4px; border-bottom: 1px solid #edf0f4; font-size: 12.5px; font-weight: 700; }
-.spotlight li:last-child { border-bottom: none; }
-.spotlight .bolt { color: var(--spotlight); font-weight: 700; }
+.timeline { list-style: none; padding: 14px 16px 14px 20px; position: relative; }
+.timeline::before {
+  content: ""; position: absolute; left: 25px; top: 20px; bottom: 20px; width: 2px;
+  background: #e8cfd8; border-radius: 2px;
+}
+.timeline li { position: relative; padding: 0 0 16px 30px; font-size: 12px; font-weight: 600; line-height: 1.55; }
+.timeline li:last-child { padding-bottom: 4px; }
+.t-dot {
+  position: absolute; left: 0; top: 3px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--spotlight); border: 2px solid #fff; box-shadow: 0 0 0 1px #e8cfd8;
+}
+.t-label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--spotlight); margin-bottom: 2px; }
 .disclaimer { margin: 14px 4px 0; font-size: 13px; color: var(--muted); max-width: 900px; }
 .demo-accounts { margin: 8px 4px 0; font-size: 13px; color: var(--muted); }
 .demo-accounts code { font-family: var(--mono); color: var(--ink); }
@@ -199,10 +211,12 @@ details.panel summary { cursor: pointer; font-weight: 650; }
 /* ---------- Footer ---------- */
 .page-footer { color: var(--muted); text-align: center; font-size: 12.5px; padding: 12px 16px; margin-top: 26px; }
 
-@media (max-width: 900px) { .role-cards { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 900px) {
+  .landing-grid { grid-template-columns: 1fr; }
+  .landing-grid .role-cards { grid-template-columns: 1fr 1fr; }
+}
 @media (max-width: 640px) {
-  .inst-bar { top: 8px; border-radius: 14px; }
-  .role-cards { grid-template-columns: 1fr; }
+  .landing-grid .role-cards { grid-template-columns: 1fr; }
   .session-grid { grid-template-columns: 1fr 1fr; }
   .screen { padding: 14px 12px 60px; }
   .tbl { display: block; overflow-x: auto; }
