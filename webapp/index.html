@@ -48,7 +48,12 @@
       <div class="spotlight-head"><span>Spotlight</span><a href="#" id="spot-toggle" onclick="toggleSpotlight();return false">More ...</a></div>
       <ul class="timeline">
         <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Verification chain</span>AUTHENTICATION &rarr; REGISTERED DEVICE &rarr; CURRENT SESSION &rarr; CHALLENGE-RESPONSE &rarr; TEACHER FINALIZES &rarr; PRESENT</span></li>
-        <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Demo accounts</span>ADMIN <code>A001 / admin123</code> &middot; TEACHER <code>T001 / teach123</code> &middot; STUDENTS <code>S001&ndash;S006 / stud123</code>. SERVE OVER <code>http://localhost</code> FOR WEB BLUETOOTH.</span></li>
+        <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Demo accounts</span>
+          <span class="cred"><span class="cred-role">Admin</span><code data-copy="A001" title="Click to copy">A001</code><code data-copy="admin123" title="Click to copy">admin123</code></span>
+          <span class="cred"><span class="cred-role">Teacher</span><code data-copy="T001" title="Click to copy">T001</code><code data-copy="teach123" title="Click to copy">teach123</code></span>
+          <span class="cred"><span class="cred-role">Students</span><code data-copy="S001" title="Click to copy">S001&ndash;S006</code><code data-copy="stud123" title="Click to copy">stud123</code></span>
+          <span class="t-note">Serve over <code>http://localhost</code> for Web Bluetooth. Click any credential to copy it.</span>
+        </span></li>
         <li class="hidden" id="spot-extra"><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Outside classroom</span>SET POSITION TO "OUTSIDE", ASK A CLASSMATE TO ENABLE RELAY MODE, THEN USE "VERIFY VIA RELAY". RELAYS FORWARD ONLY.</span></li>
       </ul>
     </aside>
