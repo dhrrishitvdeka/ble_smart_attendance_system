@@ -180,7 +180,7 @@ details.panel summary { cursor: pointer; font-weight: 650; }
 .step.fail { border-left-color: #b42318; background: #fff8f7; }
 
 /* ---------- Footer ---------- */
-.page-footer { background: linear-gradient(90deg, var(--header-1), var(--header-2)); color: #fff; text-align: center; font-size: 13px; padding: 12px 16px; margin-top: 26px; }
+.page-footer { color: var(--muted); text-align: center; font-size: 12.5px; padding: 12px 16px; margin-top: 26px; }
 
 @media (max-width: 900px) { .role-cards { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 640px) {
