@@ -234,6 +234,10 @@ details.panel summary { cursor: pointer; font-weight: 650; }
   .landing-grid .role-cards { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 640px) {
+  .inst-bar { top: 8px; border-radius: 14px; }
+  .inst-bar-inner { flex-wrap: wrap; gap: 2px 10px; padding: 10px 16px; }
+  .inst-logo { font-size: 24px; }
+  .inst-sub { flex-basis: 100%; font-size: 12.5px; }
   .landing-grid .role-cards { grid-template-columns: 1fr; }
   .session-grid { grid-template-columns: 1fr 1fr; }
   .screen { padding: 14px 12px 60px; }
