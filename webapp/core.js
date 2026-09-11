@@ -44,6 +44,19 @@ function toggleSpotlight() {
   const hidden = extra.classList.toggle("hidden");
   link.textContent = hidden ? "More ..." : "Less";
 }
+/* Click-to-copy for credential chips (event delegation, works for dynamic content) */
+document.addEventListener("click", e => {
+  const c = e.target && e.target.closest ? e.target.closest("code[data-copy]") : null;
+  if (!c) return;
+  const t = c.getAttribute("data-copy");
+  const flash = msg => {
+    const o = c.textContent;
+    c.textContent = msg;
+    setTimeout(() => { c.textContent = o; }, 900);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(() => flash("copied"), () => flash(t));
+});
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
