@@ -37,6 +37,21 @@ import androidx.core.content.ContextCompat
         explicit stop() → the radio always ends fully released.
    ============================================================ */
 
+/**
+ * Uplink Attendance Relay Envelope (solves DEFECT-01 / VULN-05 missing return path).
+ * Carries authenticated student request upstream through relay mesh to teacher authority.
+ */
+data class RelayUplinkEnvelope(
+    val sessionId: Int,
+    val studentId: String,
+    val registeredDeviceId: String,
+    val challengeNonce: String,
+    val signedResponse: String,
+    val hopCount: Int,
+    val viaStudentId: String,
+    val timestampMs: Long = System.currentTimeMillis()
+)
+
 sealed class RelayEvent {
     /** RSSI validated & Session_ID matched → safe to mark proximity check-in. */
     data class ProximityVerified(
@@ -46,6 +61,7 @@ sealed class RelayEvent {
     ) : RelayEvent()
 
     data class RelayAdvertisingStarted(val sessionId: Int, val forwardedHopCount: Int) : RelayEvent()
+    data class UplinkEnvelopeForwarded(val envelope: RelayUplinkEnvelope) : RelayEvent()
     data class Failed(val reason: String) : RelayEvent()
     object Stopped : RelayEvent()
 }
@@ -125,6 +141,20 @@ class AttendanceRelayStateMachine(
                 )
             }
         }, RADIO_SETTLE_MS)
+    }
+
+    /* ---------- Uplink Mesh Return Path (Deliverable #4) ---------- */
+    /**
+     * Forwards an authenticated student attendance envelope upstream through this relay node.
+     * Relays forward the payload as an untampered envelope without modifying cryptographic signatures.
+     */
+    fun forwardUplinkAttendance(envelope: RelayUplinkEnvelope) {
+        if (envelope.hopCount > PayloadCodec.MAX_HOPS) {
+            fail("Uplink hop limit exceeded (${envelope.hopCount} > ${PayloadCodec.MAX_HOPS})")
+            return
+        }
+        // Emit forwarded event and deliver upstream to teacher GATT server / backhaul
+        listener(RelayEvent.UplinkEnvelopeForwarded(envelope))
     }
 
     /* ---------- lifecycle ---------- */
@@ -213,15 +243,19 @@ class StudentScanner(
 
     fun start(onError: (String) -> Unit) {
         val s = scanner ?: return onError("BLE scanner unavailable")
-        val filter = ScanFilter.Builder()
+        // Dual filter: matches teacher's Service UUID and relay's Manufacturer Data
+        val serviceFilter = ScanFilter.Builder()
             .setServiceUuid(PayloadCodec.ATTENDANCE_SERVICE_UUID)
+            .build()
+        val mfgFilter = ScanFilter.Builder()
+            .setManufacturerData(PayloadCodec.COMPANY_ID, byteArrayOf(PayloadCodec.MAGIC), byteArrayOf(0xFF.toByte()))
             .build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)     // foreground only!
             .setReportDelay(0)
             .build()
         try {
-            s.startScan(listOf(filter), settings, callback)
+            s.startScan(listOf(serviceFilter, mfgFilter), settings, callback)
         } catch (e: SecurityException) {                        // R3
             onError("Missing BLUETOOTH_SCAN permission: ${e.message}")
         }
@@ -237,8 +271,10 @@ class StudentScanner(
 
 /* ============================================================
    Relay Advertiser (Peripheral) — Deliverable #3 step 2
-   Broadcasts SAME service UUID + SAME Session_ID with Hop−1.
-   Non-connectable to save power and avoid GATT handshakes.
+   Broadcasts SAME Session_ID with Hop−1.
+   PDU Budget Compliant: Manufacturer data in primary adv (15B),
+   128-bit Service UUID in ScanResponse (18B).
+   Watchdog ensures automatic exit from RELAY_ADVERTISING state.
    ============================================================ */
 class RelayAdvertiser(context: Context) {
 
@@ -248,11 +284,14 @@ class RelayAdvertiser(context: Context) {
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
     private var onStarted: () -> Unit = {}
     private var onFailure: (String) -> Unit = {}
+    private val watchdogHandler = Handler(Looper.getMainLooper())
+    private var watchdogRunnable: Runnable? = null
+
     private val callback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) { try { onStarted() } catch (_: Exception) { } }
         override fun onStartFailure(errorCode: Int) { try { onFailure(
             when (errorCode) {
-                ADVERTISE_FAILED_DATA_TOO_LARGE -> "adv payload >31 bytes (drop service UUID or shorten payload)"
+                ADVERTISE_FAILED_DATA_TOO_LARGE -> "adv payload >31 bytes (overflow prevented via ScanResponse)"
                 ADVERTISE_FAILED_NOT_SUPPORTED -> "advertising not supported"
                 ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "too many advertisers"
                 ADVERTISE_FAILED_INTERNAL_ERROR -> "advertiser internal error"
@@ -274,24 +313,35 @@ class RelayAdvertiser(context: Context) {
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(false)                               // beacon-style relay
-            .setTimeout(timeoutMs.coerceAtMost(180_000L))        // stack auto-stops ≤180s
+            .setTimeout(timeoutMs.coerceAtMost(180_000L).toInt()) // stack auto-stops ≤180s
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .build()
 
-        // NOTE: 128-bit service UUID (18B) + manufacturer (12B) + flags (3B) = 33B > 31B
-        // legacy limit. If ADVERTISE_FAILED_DATA_TOO_LARGE occurs, drop the
-        // service UUID here (scan filter can match manufacturer data instead).
+        // 31-BYTE COMPLIANCE:
+        // Primary Advertisement Data: Flags (3B) + Manufacturer Data (12B) = 15B <= 31B limit.
         val payload = try { PayloadCodec.encode(hopCount, sessionId) }
             catch (e: IllegalArgumentException) { onFailure(e.message ?: "bad hop"); return }
         val data = AdvertiseData.Builder()
-            .addServiceUuid(PayloadCodec.ATTENDANCE_SERVICE_UUID)   // keeps ScanFilter working downstream
             .addManufacturerData(PayloadCodec.COMPANY_ID, payload)
             .setIncludeDeviceName(false)                             // saves bytes
             .setIncludeTxPowerLevel(false)                           // saves bytes
             .build()
 
+        // Scan Response: Carries 128-bit Service UUID (18B) separately, keeping primary PDU strictly ≤ 31B!
+        val scanResponse = AdvertiseData.Builder()
+            .addServiceUuid(PayloadCodec.ATTENDANCE_SERVICE_UUID)
+            .build()
+
         try {
-            advertiser?.startAdvertising(settings, data, callback)   // R3 caller-side catch too
+            advertiser?.startAdvertising(settings, data, scanResponse, callback)
+
+            // Watchdog timer: prevents state deadlock after advertising timeout
+            watchdogRunnable?.let { watchdogHandler.removeCallbacks(it) }
+            val timeoutTask = Runnable {
+                stop()
+            }
+            watchdogRunnable = timeoutTask
+            watchdogHandler.postDelayed(timeoutTask, timeoutMs.coerceAtMost(180_000L))
         } catch (e: SecurityException) {
             onFailure("Missing BLUETOOTH_ADVERTISE permission: ${e.message}")
         } catch (e: Exception) {
@@ -300,6 +350,8 @@ class RelayAdvertiser(context: Context) {
     }
 
     fun stop() {
+        watchdogRunnable?.let { watchdogHandler.removeCallbacks(it) }
+        watchdogRunnable = null
         try { advertiser?.stopAdvertising(callback) } catch (_: SecurityException) { } catch (_: Exception) { }
         advertiser = null
     }

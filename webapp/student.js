@@ -21,14 +21,14 @@ function me() {
 async function studentLogin() {
   const s = DB.students.find(x => x.student_id === val("st-id").toUpperCase());
   const msg = el("st-login-msg");
-  if (!s || (await sha256hex("salt_" + s.student_id + val("st-pass"))) !== s.password_hash) {
+  if (!s || !(await verifyPassword(s.student_id, val("st-pass"), s.password_hash))) {
     msg.textContent = "Invalid credentials. Check your ID and password."; msg.className = "msg err"; return;
   }
   msg.textContent = ""; msg.className = "msg";
   currentStudent = s;
-  // Authenticated session carries the registered device — student cannot
-  // claim another ID or another device during attendance (spec §6).
-  authCtx = { deviceId: s.registered_device_id };
+  // Authenticated session carries the registered device & isolated secret
+  const secret = (DB.student_secrets && DB.student_secrets[s.student_id]) || "";
+  authCtx = { deviceId: s.registered_device_id, deviceSecret: secret };
 
   el("st-name").textContent = s.name;
   el("p-name").textContent = s.name;
@@ -267,11 +267,10 @@ async function runVerification(routeType, relayInfo, realBle) {
     return failResult("Invalid relay path (hop limit exceeded). NOT VERIFIED.");
   }
 
-  /* 1. send request */
-  let d = step("Sending attendance request " + (routeType === "DIRECT" ? "(direct BLE)" : "(relayed, hop " + relayInfo.hopCount + " via " + relayInfo.viaStudent + ")"));
-  await sleep(700);
+  /* 1. Send attendance request & request challenge from Teacher Authority */
+  let d = step("Requesting single-use challenge from Teacher GATT Authority");
+  await sleep(600);
 
-  /* teacher-side validation */
   reloadDB();
   const session = getActiveSession();
   if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
@@ -279,53 +278,25 @@ async function runVerification(routeType, relayInfo, realBle) {
   }
   if (DB.seen_request_ids.length > 500) DB.seen_request_ids = DB.seen_request_ids.slice(-200);
   DB.seen_request_ids.push(requestId); saveDB();
+
+  const challengeRes = teacherHandleChallengeRequest(session.session_id, currentStudent.student_id, authCtx.deviceId);
+  if (!challengeRes.ok) {
+    done(d, false, challengeRes.reason);
+    return failResult(challengeRes.reason);
+  }
+  done(d, true, challengeRes.challenge.slice(0, 10) + "… (issued by Teacher root)");
+
+  /* 2. Compute hardware-bound response */
+  d = step("Computing hardware-bound device signature: SHA-256(challenge || secret)");
+  await sleep(700);
+  const secret = authCtx.deviceSecret || (DB.student_secrets && DB.student_secrets[currentStudent.student_id]) || "";
+  const response = await sha256hex(challengeRes.challenge + secret);
   done(d, true);
 
-  /* teacher validates identity from the authenticated app session,
-     never from a typed-in ID */
-  d = step("Teacher validates identity & registered device");
+  /* 3. Capture radio proximity evidence */
+  d = step("Measuring BLE proximity & Link Layer evidence");
   await sleep(600);
-  me();
-  if (!currentStudent || !authCtx) { done(d, false, "not authenticated"); return failResult("Not authenticated."); }
-  if (currentStudent.class_id !== session.class_id) { done(d, false, "wrong class"); return failResult("You are not enrolled in this class."); }
-  if (authCtx.deviceId !== currentStudent.registered_device_id) {
-    rejectAttendance(currentStudent, "unregistered_phone");
-    done(d, false, "unregistered phone"); return failResult("Device not registered to this student.");
-  }
-  done(d, true, currentStudent.registered_device_id);
 
-  /* 2. teacher issues random, single-use, expiring challenge */
-  d = step("Receiving challenge");
-  await sleep(600);
-  currentChallenge = {
-    value: randHex(16),
-    expiresAt: now() + CHALLENGE_TTL_MS,
-    used: false,
-    sessionId: session.session_id
-  };
-  done(d, true, currentChallenge.value.slice(0, 12) + "…");
-
-  /* 3. compute response = SHA-256(challenge || device_secret) */
-  d = step("Computing authenticated response");
-  await sleep(800);
-  if (now() > currentChallenge.expiresAt) { done(d, false, "challenge expired"); return failResult("Challenge expired."); }
-  const response = await sha256hex(currentChallenge.value + currentStudent.device_secret);
-  done(d, true);
-
-  /* 4. teacher verifies response + RSSI evidence + duplicates */
-  d = step("Teacher verifies response & proximity evidence");
-  await sleep(900);
-
-  const expected = await sha256hex(currentChallenge.value + currentStudent.device_secret);
-  if (response !== expected) { done(d, false, "challenge mismatch"); return failResult("Challenge verification failed."); }
-  if (now() > currentChallenge.expiresAt || currentChallenge.used) {
-    done(d, false, "challenge expired/used"); return failResult("Challenge expired.");
-  }
-  currentChallenge.used = true;
-  done(d, true, "challenge valid");
-
-  /* RSSI evidence: prefer REAL Web Bluetooth measurement (online mode),
-     otherwise simulated radio evidence. Proximity evidence only. */
   let rssi, rssiNote;
   if (realBle && realBle.ok) {
     rssi = realBle.rssi != null ? realBle.rssi : simulateRSSI(myPosition());
@@ -342,39 +313,43 @@ async function runVerification(routeType, relayInfo, realBle) {
     rssiNote = null;
   }
 
-  reloadDB();
-  const live = getActiveSession();
-  if (!live || live.session_id !== session.session_id || live.status !== "ACTIVE" || now() >= live.expiration_time) {
-    done(d, false, "session expired mid-verification"); return failResult("Session expired during verification. NOT VERIFIED.");
+  if (routeType === "DIRECT" && rssi <= RSSI_FLOOR) {
+    done(d, false, "no usable BLE link (" + rssi + " dBm)");
+    return failResult("No direct BLE connection. Try the relay path below. NOT VERIFIED (not absent).");
   }
-  const dup = DB.attendance.some(a => a.session_id === session.session_id && a.student_id === currentStudent.student_id);
-  if (dup) { done(d, false, "already recorded this session"); return failResult("Attendance already requested for this session."); }
+  done(d, true, rssiNote ? (rssiNote + " — proximity evidence recorded") : ("RSSI " + rssi + " dBm — proximity evidence recorded"));
 
-  if (routeType === "DIRECT") {
-    if (rssi <= RSSI_FLOOR) {
-      done(d, false, "no usable BLE link (" + rssi + " dBm)");
-      return failResult("No direct BLE connection. Try the relay path below. NOT VERIFIED (not absent).");
-    }
-    done(d, true, rssiNote ? (rssiNote + " — proximity evidence recorded") : ("RSSI " + rssi + " dBm — proximity evidence recorded"));
-    const ok = recordAttendance(currentStudent, "DIRECT", rssi, 0, null);
-    if (!ok) { done(d, false, "rejected by teacher validation"); return failResult("Rejected by teacher validation (duplicate/expired)."); }
-    return successResult(rssi, "DIRECT", null, 0);
+  /* 4. Submit to Teacher Authority for cryptographic, enrollment, and proximity verification */
+  d = step("Submitting proof & proximity to Teacher Authority for verification");
+  await sleep(800);
+
+  if (routeType === "RELAY") {
+    reloadDB();
+    DB.relay_events.push({
+      event_id: uid("rl"), message_id: uid("msg"), session_id: session.session_id,
+      source_student_id: currentStudent.student_id, relay_student_id: relayInfo.viaStudent,
+      hop_count: relayInfo.hopCount, timestamp: now(), status: "FORWARDED"
+    });
+    saveDB();
   }
 
-  /* RELAY: communication works, but a relay does NOT prove physical
-     presence (spec §15). Evidence stays weak -> teacher review. */
-  if (relayInfo.hopCount > MAX_HOPS) { done(d, false, "hop limit exceeded"); return failResult("Hop limit exceeded — message discarded."); }
-  done(d, true, "relayed via " + relayInfo.viaStudent + " — hop " + relayInfo.hopCount + "/" + MAX_HOPS);
-  reloadDB();
-  DB.relay_events.push({
-    event_id: uid("rl"), message_id: uid("msg"), session_id: session.session_id,
-    source_student_id: currentStudent.student_id, relay_student_id: relayInfo.viaStudent,
-    hop_count: relayInfo.hopCount, timestamp: now(), status: "FORWARDED"
-  });
-  saveDB();
-  const okRelay = recordAttendance(currentStudent, "RELAY", rssi, relayInfo.hopCount, relayInfo.viaStudent);
-  if (!okRelay) { done(d, false, "rejected by teacher validation"); return failResult("Rejected by teacher validation (duplicate/expired)."); }
-  successResult(rssi, "RELAY", relayInfo.viaStudent, relayInfo.hopCount);
+  const verifyRes = await teacherVerifyAttendanceSubmission(
+    session.session_id,
+    currentStudent.student_id,
+    authCtx.deviceId,
+    response,
+    routeType,
+    rssi,
+    relayInfo
+  );
+
+  if (!verifyRes.ok) {
+    done(d, false, verifyRes.reason);
+    return failResult(verifyRes.reason);
+  }
+
+  done(d, true, "Teacher Authority verified challenge & recorded ELIGIBLE");
+  return successResult(rssi, routeType, verifyRes.viaStudent, verifyRes.hopCount);
 }
 
 function failResult(text) {

@@ -62,10 +62,44 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 /* Escape for embedding inside single-quoted JS strings in inline handlers */
-function escJS(s) {
-  return String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/</g, "\\x3c");
+/* Hardened cryptographic password hashing using PBKDF2-HMAC-SHA256 (NIST SP 800-63B compliant) */
+async function pbkdf2Hex(password, salt, iterations = 10000) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveBits"]
+  );
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: enc.encode("ble_salt_v2_" + salt),
+      iterations: iterations,
+      hash: "SHA-256"
+    },
+    keyMaterial,
+    256
+  );
+  return "pbkdf2$" + iterations + "$" + [...new Uint8Array(derived)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
-async function hashPassword(id, pw) { return sha256hex("salt_" + id + pw); }
+
+async function hashPassword(id, pw) {
+  return await pbkdf2Hex(pw, id, 10000);
+}
+
+async function verifyPassword(id, pw, storedHash) {
+  if (!storedHash) return false;
+  if (storedHash.startsWith("pbkdf2$")) {
+    const parts = storedHash.split("$");
+    const iters = parseInt(parts[1], 10) || 10000;
+    const computed = await pbkdf2Hex(pw, id, iters);
+    return computed === storedHash;
+  }
+  // Backward compatibility with initial seeds (single-iteration SHA-256)
+  const legacyUpper = await sha256hex("salt_" + id.toUpperCase() + pw);
+  if (legacyUpper === storedHash) return true;
+  const legacyRaw = await sha256hex("salt_" + id + pw);
+  return legacyRaw === storedHash;
+}
+
 function teacherClasses(teacherId) {
   return DB.classes.filter(c =>
     c.teacher_id === teacherId ||
@@ -102,6 +136,7 @@ function loadDB() {
       DB.audit_logs = DB.audit_logs || [];
       DB.seen_request_ids = DB.seen_request_ids || [];
       DB.seen_message_ids = DB.seen_message_ids || [];
+      DB.student_secrets = DB.student_secrets || {};
       return;
     }
   } catch (e) {
@@ -110,7 +145,7 @@ function loadDB() {
   DB = {
     admins: [], teachers: [], students: [], classes: [], schedules: [],
     sessions: [], attendance: [], attendance_events: [], relay_events: [], audit_logs: [],
-    seen_request_ids: [], seen_message_ids: [],
+    seen_request_ids: [], seen_message_ids: [], student_secrets: {},
     online: false
   };
 }
@@ -128,21 +163,23 @@ async function seed() {
   });
   DB.teachers.push({
     teacher_id: "T001", name: "Dr. Sharma", email: "sharma@college.edu",
-    password_hash: await sha256hex("salt_T001teach123")
+    password_hash: await hashPassword("T001", "teach123")
   });
   DB.classes.push({ class_id: "CSE-A", class_name: "CSE-A", subject: "Data Structures", teacher_id: "T001" });
 
   const first = ["Aarav", "Diya", "Rohan", "Ishaan", "Meera", "Kabir"];
   const last  = ["Kumar", "Patel", "Verma", "Singh", "Iyer", "Shah"];
+  DB.student_secrets = DB.student_secrets || {};
   for (let i = 0; i < first.length; i++) {
     const sid = "S00" + (i + 1);
+    const secret = randHex(16);
+    DB.student_secrets[sid] = secret;
     DB.students.push({
       student_id: sid,
       name: first[i] + " " + last[i],
       email: sid.toLowerCase() + "@student.college.edu",
-      password_hash: await sha256hex("salt_" + sid + "stud123"),
+      password_hash: await hashPassword(sid, "stud123"),
       registered_device_id: "DEV-" + sid,
-      device_secret: randHex(16),
       class_id: "CSE-A",
       position: "near",
       relay_active_for: null

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BLE Smart Attendance</string>
+    <string name="student_supplicant">Student Supplicant Client</string>
+    <string name="login_title">Student Sign In</string>
+    <string name="login_subtitle">Bind hardware credentials &amp; verify attendance</string>
+    <string name="student_id_hint">Student ID (e.g., S001)</string>
+    <string name="device_secret_hint">Device Secret Key (64-char Hex)</string>
+    <string name="device_binding_label">Hardware Device Fingerprint:</string>
+    <string name="btn_login">Authenticate &amp; Bind Device</string>
+    <string name="btn_demo_s001">Load Demo Student (S001 - Aarav)</string>
+    <string name="btn_demo_s003">Load Demo Student (S003 - Rohan)</string>
+
+    <string name="tab_scan">Attendance</string>
+    <string name="tab_history">History</string>
+
+    <string name="status_not_verified">NOT VERIFIED</string>
+    <string name="status_scanning">SCANNING FOR TEACHER…</string>
+    <string name="status_connecting">CONNECTING GATT SERVER…</string>
+    <string name="status_challenging">SOLVING CHALLENGE…</string>
+    <string name="status_eligible">ELIGIBLE (AWAITING CLOSE)</string>
+    <string name="status_present">CONFIRMED PRESENT</string>
+    <string name="status_failed">VERIFICATION FAILED</string>
+
+    <string name="action_scan_classroom">Scan Classroom Beacon</string>
+    <string name="action_submit_direct">Submit Direct Attendance</string>
+    <string name="action_mesh_relay">Submit via Mesh Relay</string>
+    <string name="action_logout">Sign Out</string>
+
+    <string name="session_id_label">Active Session: %1$s</string>
+    <string name="signal_strength_label">Signal Strength (RSSI): %1$d dBm</string>
+    <string name="hop_count_label">Hop Count: %1$d</string>
+    <string name="route_type_label">Route: %1$s</string>
+    <string name="empty_history">No attendance records recorded yet.</string>
+</resources>

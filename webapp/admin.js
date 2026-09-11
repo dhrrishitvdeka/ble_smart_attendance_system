@@ -11,7 +11,7 @@ let currentAdmin = null;
 async function adminLogin() {
   const a = DB.admins.find(x => x.admin_id === val("a-id").toUpperCase());
   const msg = el("a-login-msg");
-  if (!a || (await hashPassword(a.admin_id, val("a-pass"))) !== a.password_hash) {
+  if (!a || !(await verifyPassword(a.admin_id, val("a-pass"), a.password_hash))) {
     msg.textContent = "Invalid credentials."; msg.className = "msg err"; return;
   }
   currentAdmin = a;
@@ -101,11 +101,13 @@ async function addStudent() {
   if (DB.students.some(s => s.student_id === sid)) return adminMsg("asn-msg", "Student ID already exists.", false);
 
   // The student is enrolled ONLY in the selected class.
+  const secret = randHex(16);
+  DB.student_secrets = DB.student_secrets || {};
+  DB.student_secrets[sid] = secret;
   DB.students.push({
     student_id: sid, name, email,
     password_hash: await hashPassword(sid, pass),
     registered_device_id: "DEV-" + sid,
-    device_secret: randHex(16),
     class_id: cid,                       // single explicit enrollment
     relay_active_for: null
   });
