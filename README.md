@@ -10,6 +10,19 @@ https://dhrrishitvdeka.github.io/ble_smart_attendance_system/
 
 Use Chrome or Edge on a laptop/desktop for the full experience.
 
+> 🛡️ **SYSTEM AUDIT COMPLETE**: A comprehensive forensic architectural, security, and protocol audit has been performed across all components of this repository. Read the exhaustive [System Audit Report (AUDIT_REPORT.md)](AUDIT_REPORT.md) and [Project Architecture & Feature Inventory (PROJECT.md)](PROJECT.md).
+
+### Component Implementation Status
+
+| Component | Directory | Stated Technology | Actual Implementation Status | Detailed Audit Analysis |
+| :--- | :--- | :--- | :--- | :--- |
+| **Teacher Desktop** | `TeacherApp/` | C# / .NET 8 (Windows) | **Skeleton Stub** (12-line `Program.cs`; no GATT server, no SQLite, no UI) | [AUDIT_REPORT.md §2.1](AUDIT_REPORT.md#21-subsystem-1-teacherapp-net-8-windows-host) |
+| **Student Mobile** | `StudentApp/` | Android / Kotlin | **Empty Skeleton** (Manifest + `Protocol.kt`; no build files, no UI, no code) | [AUDIT_REPORT.md §2.2](AUDIT_REPORT.md#22-subsystem-2-studentapp-android-kotlin-mobile-client) |
+| **BLE Relay & Engine** | `android-relay-ble/` | Kotlin & C# | **Defective / Incomplete** (Unconnectable beacon; no return channel; 33B overflow) | [AUDIT_REPORT.md §2.3](AUDIT_REPORT.md#23-subsystem-3-android-relay-ble-bluetooth-engine--state-machine) |
+| **Web Simulation** | `webapp/` | HTML5 / CSS3 / Vanilla JS | **Functional Simulation** (In-memory `localStorage` DB; client self-verifies) | [AUDIT_REPORT.md §2.4](AUDIT_REPORT.md#24-subsystem-4-webapp-interactive-browser-simulation) |
+| **Cloud Sync Service** | `Backend/` | Python / FastAPI / SQLite | **Functional API / Insecure** (Unauthenticated ingestion; 1 of 7 tables) | [AUDIT_REPORT.md §2.5](AUDIT_REPORT.md#25-subsystem-5-backend-python--fastapi-cloud-sync-service) |
+
+
 ---
 
 ## 1. Log in
@@ -140,6 +153,8 @@ Anything failing means `NOT VERIFIED`, never automatic absence.
 
 ## 8. For developers
 
+- `AUDIT_REPORT.md` — The publication-grade, authoritative forensic architecture, security, and protocol audit report.
+- `PROJECT.md` — Project architecture summary, comprehensive feature inventory, and phased milestone roadmap.
 - `webapp/` — the full working simulation (no build step): `core.js` (DB,
   crypto, seed), `admin.js`, `teacher.js`, `student.js`.
 - `Backend/` — FastAPI sync API + tests.
@@ -153,3 +168,4 @@ Anything failing means `NOT VERIFIED`, never automatic absence.
   background scanning and relay security are documented there (§29) — this
   system assists verification; it does not mathematically prove physical
   presence.
+

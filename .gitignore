@@ -17,3 +17,5 @@ node_modules/
 .vs/
 .idea/
 *.user
+.agents/
+.pytest_cache/
