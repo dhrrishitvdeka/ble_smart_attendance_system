@@ -34,10 +34,27 @@ body { font-family: var(--font); background: var(--bg); color: var(--ink); line-
 .mono { font-family: var(--mono); font-size: 0.92em; }
 .highlight { font-weight: 700; }
 
-/* ---------- VTOP header ---------- */
-.inst-bar { background: linear-gradient(90deg, var(--header-1), var(--header-2)); color: #fff; }
+/* ---------- VTOP header: floating glass pill ---------- */
+.inst-bar {
+  position: sticky; top: 12px; z-index: 50;
+  width: min(1240px, calc(100% - 24px));
+  margin: 14px auto 0;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(100deg, rgba(16, 52, 120, 0.72), rgba(26, 115, 232, 0.66));
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow: 0 12px 32px rgba(10, 35, 85, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+}
+.inst-bar::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 45%);
+}
 .inst-bar-inner {
-  max-width: 1240px; margin: 0 auto; padding: 12px 16px;
+  position: relative;
+  max-width: 1240px; margin: 0 auto; padding: 12px 20px;
   display: flex; align-items: baseline; gap: 14px;
 }
 .inst-logo { font-family: Georgia, "Times New Roman", serif; font-size: 30px; font-weight: 700; letter-spacing: 0.02em; }
@@ -184,6 +201,7 @@ details.panel summary { cursor: pointer; font-weight: 650; }
 
 @media (max-width: 900px) { .role-cards { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 640px) {
+  .inst-bar { top: 8px; border-radius: 14px; }
   .role-cards { grid-template-columns: 1fr; }
   .session-grid { grid-template-columns: 1fr 1fr; }
   .screen { padding: 14px 12px 60px; }
