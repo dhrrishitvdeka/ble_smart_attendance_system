@@ -72,9 +72,11 @@ object PayloadCodec {
         val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
         if (buf.get() != MAGIC) return null
         val hop = buf.get().toInt() and 0xFF
+        if (hop !in 1..MAX_HOPS) return null // hop 0 = exhausted, >MAX = invalid; discard
         val session = buf.int
         return Decoded(sessionId = session, hopCount = hop)
     }
 
-    const val MAX_HOPS = 3
+    /** Single source of truth — must match webapp/core.js MAX_HOPS and spec §13. */
+    const val MAX_HOPS = 2
 }

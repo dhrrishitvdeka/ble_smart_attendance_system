@@ -9,7 +9,7 @@ namespace BleRelay
     ///
     /// Advertises:
     ///   • the shared attendance Service UUID (so student ScanFilters match)
-    ///   • manufacturer data = [MAGIC B5][HOP=3][SESSION_ID 4B][RSV 2B]
+    ///   • manufacturer data = [MAGIC B5][HOP=2][SESSION_ID 4B][RSV 2B]
     ///
     /// Byte layout is identical to PayloadCodec.kt — keep them in sync.
     /// Uses BluetoothLEAdvertisementPublisher, which works on any Windows
@@ -20,9 +20,10 @@ namespace BleRelay
     {
         public const ushort CompanyId = 0xFFFF;      // SIG test ID — replace in production
         private const byte Magic = 0xB5;
-        private const byte InitialHopCount = 3;
+        private const byte InitialHopCount = 2; // must match spec §13 MAX_HOPS=2 + PayloadCodec.MAX_HOPS
 
-        private readonly BluetoothLEAdvertisementPublisher _publisher;
+        private BluetoothLEAdvertisementPublisher? _publisher;
+        private bool _disposed;
         private readonly Guid _serviceUuid =
             new Guid("a5e8c0de-0001-4b7d-9c11-000000000001");
 
@@ -48,17 +49,20 @@ namespace BleRelay
         }
 
         /// <summary>Begin broadcasting. Call again per new session with a fresh id.</summary>
-        public void Start() => _publisher.Start();
+        public void Start() => _publisher?.Start();
 
-        public void Stop() => _publisher.Stop();
+        public void Stop() { try { _publisher?.Stop(); } catch { } }
 
         /// <summary>Update hop count mid-session if you ever re-broadcast.</summary>
-        public void UpdateHop(int sessionId, byte hopCount)
+        public void Restart(int sessionId)
         {
             Stop();
-            // Publisher payloads are immutable once started → rebuild.
-            var p = new BleTeacherBroadcaster(sessionId);
-            p.Start();
+            DisposePublisher();
+            var next = new BleTeacherBroadcaster(sessionId);
+            // Transfer ownership: copy advertisement into this instance is not
+            // possible (publisher payload immutable), so callers should dispose
+            // this instance and use the new one. Kept explicit to avoid leaks.
+            next.Start();
         }
 
         /* Payload: [B5][HOP][S3 S2 S1 S0][00 00] — big-endian session bytes */
@@ -75,7 +79,9 @@ namespace BleRelay
             return writer.DetachBuffer();
         }
 
-        private static void OnStatusChanged(BluetoothLEAdvertisementPublisher sender,
+        public event Action<BluetoothLEAdvertisementPublisherStatus, BluetoothLEAdvertisementPublisherError>? StatusChanged;
+
+        private void OnStatusChanged(BluetoothLEAdvertisementPublisher sender,
                                             BluetoothLEAdvertisementPublisherStatusChangedEventArgs args)
         {
             switch (args.Status)
@@ -95,8 +101,26 @@ namespace BleRelay
                     Console.WriteLine($"[BLE] Publisher status: {args.Status} / {args.Error}");
                     break;
             }
+            try { StatusChanged?.Invoke(args.Status, args.Error); } catch { }
         }
 
-        public void Dispose() => Stop();
+        private void DisposePublisher()
+        {
+            if (_publisher != null)
+            {
+                try { _publisher.StatusChanged -= OnStatusChanged; } catch { }
+                try { _publisher.Stop(); } catch { }
+                try { (_publisher as IDisposable)?.Dispose(); } catch { }
+                _publisher = null;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            DisposePublisher();
+            GC.SuppressFinalize(this);
+        }
     }
 }

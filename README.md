@@ -1,86 +1,155 @@
-# BLE Smart Classroom Attendance System — Web Simulation
+# BLE Smart Classroom Attendance System
 
-A browser-based simulation of the BLE-assisted attendance system described in
-`New Text Document.txt`. The teacher laptop is simulated in-browser as the
-trusted root device and **final attendance authority**. Students can never
-mark themselves PRESENT.
+A BLE-assisted attendance verification system for classrooms. The teacher's
+device is the trusted root and the **final attendance authority** — students
+can never mark themselves present, and detecting a Bluetooth signal alone is
+never treated as presence.
 
-## Run
+**Live demo (no install):**
+https://dhrrishitvdeka.github.io/ble_smart_attendance_system/
 
-Open `webapp/index.html` in any modern browser (Chrome/Edge recommended).
-No server or build step required.
+Use Chrome or Edge on a laptop/desktop for the full experience.
 
-## Demo accounts
+---
 
-| Role    | ID     | Password  |
-|---------|--------|-----------|
-| Admin   | A001   | admin123  |
-| Teacher | T001   | teach123  |
-| Student | S001–S006 | stud123 |
+## 1. Log in
 
-## What is implemented (mapped to the spec)
+Pick your portal on the home page and sign in with a demo account:
 
-- **Admin portal** — the only place teachers, classes, teacher schedules and
-  student enrollments can be created. Each student is enrolled in exactly ONE
-  selected class (never all classes) and can only attend that class's sessions.
-  Teachers only see classes assigned/scheduled to them.
-- **Real BLE (online mode)** — with internet toggled ON in Chrome/Edge
-  (HTTPS or localhost), verification attempts a real Web Bluetooth GATT
-  connection to a nearby device and records its RSSI when available.
-  Offline mode uses the radio simulation.
-- **Teacher portal** — login (salted SHA-256 password hashes), class select,
-  START ATTENDANCE generating a cryptographically random temporary session ID,
-  random nonce, and auto-expiration (10 min). Simulated GATT-peripheral
-  capability check before starting.
-- **Student portal** — login with registered-device binding; the attendance
-  flow always uses the identity from the authenticated login session, never a
-  typed-in ID. Screens: profile, BLE scan, verification, result, history.
-- **BLE simulation** — RSSI per simulated position (near / back of room /
-  outside) with noise. RSSI is treated strictly as *proximity evidence*, never
-  exact distance.
-- **Challenge-response** — random, single-use, session-bound challenge that
-  expires in 30 s; response = SHA-256(challenge ‖ device_secret), verified
-  teacher-side. Request IDs prevent replays; duplicates rejected per session.
-- **Relay** — opt-in, session-only relay mode. Relay messages carry message ID,
-  hop count (MAX_HOPS = 2), and are forwarded without modification. Relays
-  never authorize attendance. Shortest reliable route preferred. If no relay:
-  NOT VERIFIED (never auto-absent).
-- **Decision chain** — authentication → registered device → current session →
-  BLE communication → proximity evidence → valid challenge → no duplicate →
-  ELIGIBLE → **teacher finalizes** → PRESENT.
-- **Dashboard** — live roster with status, route (DIRECT / VIA student +
-  hops), RSSI evidence, counts, manual review override, finalize button,
-  audit log.
-- **Offline-first storage + sync** — localStorage stands in for SQLite;
-  toggle internet offline/online; sync pushes only unsynced records keyed by
-  unique `attendance_id` (idempotent, no duplicates).
+| Portal  | ID          | Password   |
+|---------|-------------|------------|
+| Admin   | `A001`      | `admin123` |
+| Teacher | `T001`      | `teach123` |
+| Student | `S001`–`S006` | `stud123`  |
 
-## Try these scenarios
+> Tip: the credentials are also listed under **Spotlight** on the home page —
+> click any of them to copy it.
 
-1. Teacher login → START ATTENDANCE → note the session ID.
-2. Log in as S001 (position: near) → Scan → VERIFY MY PRESENCE → watch the
-   full challenge-response chain → ELIGIBLE on dashboard → FINALIZE.
-3. Set S002 to *back of classroom* → direct link may be weak/moderate but works.
-4. Set S003 to *outside classroom* → no direct link → enable relay mode on an
-   already-present student (e.g. S001) → S003 uses the RELAY path (hop 2) —
-   still requires full verification; relay never proves presence.
-5. Wait for session expiry or toggle internet and use Sync to Cloud.
+---
 
-## Limitations (per spec §29)
+## 2. Admin — first-time setup
 
-This is a **BLE-assisted attendance verification** demo, not proof of physical
-presence:
+Only the admin can create teachers, classes, schedules and student enrollments.
+Do them **in this order**:
 
-- Browser JS cannot access real BLE advertising/GATT-server peripherals; all
-  radio behaviour here is simulated.
-- Real-world RSSI depends on walls, people, furniture, phone orientation,
-  interference and hardware — it cannot measure distance.
-- Android background scanning/advertisting restrictions, laptop peripheral-mode
-  support variability, and phone handoff are documented concerns of the real
-  system (C# `GattServiceProvider` + Kotlin `BluetoothLeScanner`) that this web
-  simulation abstracts away.
-- A successful relay chain proves connectivity through another student's
-  device, not that the destination student is inside the classroom.
+1. **Add Teacher** — enter an ID (e.g. `T002`), name and password.
+2. **Add Class** — enter a class ID (e.g. `CSE-B`), a subject, and assign it to
+   a teacher.
+3. **Schedule a Class to a Teacher** — pick the class and teacher, add day/time.
+   A teacher only ever sees classes assigned or scheduled to them.
+4. **Enroll Student** — enter the student details and choose **one** class.
+   Every student belongs to exactly one class and can only attend that
+   class's sessions. The device ID (`DEV-<student_id>`) is registered
+   automatically.
 
-The production architecture (C# .NET 8 teacher app, Kotlin student app,
-FastAPI backend) follows the phased plan in the spec document.
+The tables at the bottom always show the current teachers, classes, schedules
+and enrollments.
+
+## 3. Teacher — run attendance
+
+1. Log in and pick your class, then press **Start Attendance**. This creates a
+   random temporary session ID + nonce. The session **expires automatically
+   after 10 minutes**.
+2. Watch the **live roster**: each student shows `NOT VERIFIED`, `ELIGIBLE`
+   (passed all checks, awaiting you) or `PRESENT`, plus their route
+   (`DIRECT` or `VIA <classmate>`) and RSSI proximity evidence.
+3. Optionally use **Mark Present** on individual rows for manual review.
+4. Press **Finalize Attendance** to confirm everyone eligible. Students who
+   never verified stay `NOT VERIFIED` — nobody is auto-marked absent.
+5. **End Session** when the class is over.
+6. Connectivity: use **Toggle Internet** + **Sync to Cloud** to push records to
+   the backend. Syncing is idempotent — re-syncing never creates duplicates.
+
+## 4. Student — verify your presence
+
+1. Log in. Your attendance is bound to your **registered device** and your
+   login session — you can't type in someone else's ID.
+2. Set your **simulated position** on the home screen:
+   - `Near` — strong signal, direct verification works.
+   - `Back of classroom` — moderate signal, direct verification works.
+   - `Outside classroom` — no direct link; you must use the relay path.
+3. Press **Scan for Class Session**, then **Verify My Presence**. You'll see
+   each check pass: identity → device → session → challenge → proximity.
+4. The result is `VERIFICATION COMPLETE` (now `ELIGIBLE`, waiting for the
+   teacher to finalize) or `NOT VERIFIED` with the reason. Check
+   **Attendance History** anytime for your past records.
+
+### Can't reach the teacher? Use a relay
+
+1. Ask a classmate with a working connection to tick
+   **"Act as BLE relay for classmates"** on their home screen
+   (relay mode only works during an active session).
+2. On your phone, scan and press **Verify via Relay** (or **Try Relay Path**).
+   Your request travels Teacher → classmate → you (2 hops max) and still goes
+   through every verification check. Relays only forward messages — they prove
+   connectivity, not presence, and can never mark attendance.
+
+### Real Bluetooth vs simulation
+
+The badge on the student home/scan screens always tells you the active mode:
+
+- **Real BLE available** (Chrome/Edge over `https://` or `http://localhost`):
+  verification attempts a real Web Bluetooth device connection.
+- **Simulation in use** (any other setup): the position-based radio simulation
+  is used instead. This is why you should open the app via `http://localhost`
+  (see below), never as a downloaded file.
+
+---
+
+## 5. Run it on your own machine
+
+```bat
+start-webapp.bat
+```
+
+or manually:
+
+```bash
+python -m http.server 8080 --directory webapp
+# open http://localhost:8080/index.html in Chrome/Edge
+```
+
+> Opening `index.html` directly as a file (`file://`) works for clicks but
+> disables real Web Bluetooth — always serve over localhost.
+
+### Optional: cloud-sync backend
+
+```bash
+pip install -r Backend/requirements.txt
+uvicorn Backend.main:app --reload   # sync API on http://localhost:8000
+pytest Backend/tests -q             # 3 tests, all passing
+```
+
+## 6. Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "No active classroom session found" | The teacher hasn't pressed Start Attendance (or it expired after 10 min). |
+| "You are enrolled in X" | That session belongs to another class — log in as a student of that class. |
+| Direct verify fails but you're "near" | Check the BLE badge; outside/localhost or permissions may force simulation — set position to Near. |
+| "No relay available" | No classmate has relay mode on for this session, or you're not in the same class. |
+| Page looks outdated after an update | Hard-refresh: `Ctrl+Shift+R` (or incognito). |
+| Start over completely | Clear the site's local storage in your browser (the demo database lives there), then reload to re-seed demo data. |
+
+## 7. How verification works (the short version)
+
+Authentication → registered device → current session → BLE communication →
+proximity evidence (RSSI, never exact distance) → single-use challenge-response
+→ duplicate check → `ELIGIBLE` → **teacher finalizes** → `PRESENT`.
+Anything failing means `NOT VERIFIED`, never automatic absence.
+
+## 8. For developers
+
+- `webapp/` — the full working simulation (no build step): `core.js` (DB,
+  crypto, seed), `admin.js`, `teacher.js`, `student.js`.
+- `Backend/` — FastAPI sync API + tests.
+- `TeacherApp/` — .NET 8 teacher stub; `StudentApp/` — Android BLE
+  permission manifest + protocol constants (native apps are stubs; the web
+  simulation is the complete implementation).
+- `android-relay-ble/` — BLE beacon codec + relay state machine (Kotlin) and
+  Windows broadcaster (C#). `shared/ble_config.json` is the single source of
+  truth for UUIDs, `MAX_HOPS = 2` and radio thresholds.
+- Full spec: `New Text Document.txt`. Known honest limits of BLE/RSSI,
+  background scanning and relay security are documented there (§29) — this
+  system assists verification; it does not mathematically prove physical
+  presence.

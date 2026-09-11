@@ -8,6 +8,7 @@ let currentStudent = null;          // logged-in student record
 let authCtx = null;                 // { deviceId } from login session
 let currentChallenge = null;        // { value, expiresAt, used }
 let scanTimer = null;
+let scanTimeout = null;
 
 /* Re-sync this tab with the shared DB and refresh the student reference */
 function me() {
@@ -21,8 +22,9 @@ async function studentLogin() {
   const s = DB.students.find(x => x.student_id === val("st-id").toUpperCase());
   const msg = el("st-login-msg");
   if (!s || (await sha256hex("salt_" + s.student_id + val("st-pass"))) !== s.password_hash) {
-    msg.textContent = "Invalid credentials."; msg.className = "msg err"; return;
+    msg.textContent = "Invalid credentials. Check your ID and password."; msg.className = "msg err"; return;
   }
+  msg.textContent = ""; msg.className = "msg";
   currentStudent = s;
   // Authenticated session carries the registered device — student cannot
   // claim another ID or another device during attendance (spec §6).
@@ -30,10 +32,14 @@ async function studentLogin() {
 
   el("st-name").textContent = s.name;
   el("p-name").textContent = s.name;
-  el("p-meta").textContent = s.student_id + " \u00b7 " + s.email;
-  el("p-device").textContent = "\u{1F4F1} " + s.registered_device_id;
+  el("p-meta").textContent = s.student_id + " · " + (s.email || "");
+  const avatar = document.querySelector("#sp-home .avatar");
+  if (avatar) avatar.textContent = (s.name || "S").trim().charAt(0).toUpperCase() || "S";
+  el("p-device").textContent = "Device " + s.registered_device_id;
   el("p-class").textContent = "Class " + s.class_id;
   el("relay-mode").checked = s.relay_active_for != null;
+  const posSel = el("sim-position");
+  if (posSel) posSel.value = s.position || "near";
   updateRelayInfo();
   updateBleStatus();
   audit("STUDENT_LOGIN", s.student_id + " device=" + s.registered_device_id);
@@ -41,22 +47,44 @@ async function studentLogin() {
   studentHome();
 }
 function studentLogout() {
-  if (currentStudent) currentStudent.relay_active_for = null;
-  currentStudent = null; authCtx = null; saveDB();
+  reloadDB();
+  if (currentStudent) {
+    const s = DB.students.find(x => x.student_id === currentStudent.student_id);
+    if (s) s.relay_active_for = null;
+    saveDB();
+  }
+  currentStudent = null; authCtx = null;
+  stopScan();
   showScreen("screen-role");
 }
 function studentHome() {
+  stopScan();
   document.querySelectorAll(".phone-page").forEach(p => p.classList.remove("active"));
   el("sp-home").classList.add("active");
+}
+function myPosition() {
+  const sel = el("sim-position");
+  const p = sel ? sel.value : null;
+  if (p === "back" || p === "outside" || p === "near") return p;
+  const s = currentStudent;
+  return (s && s.position) || "near";
+}
+function setSimPosition(pos) {
+  reloadDB();
+  if (currentStudent) {
+    const s = DB.students.find(x => x.student_id === currentStudent.student_id);
+    if (s) { s.position = pos; saveDB(); currentStudent = s; }
+  }
 }
 
 /* ---- Relay mode (spec §10/§11): explicit opt-in, session-only ---- */
 function toggleRelay(on) {
   const s = me();
+  if (!s) return;
   const sess = getActiveSession();
   if (on && !sess) {
     alert("Relay mode is only allowed during an ACTIVE attendance session.");
-    el("relay-mode").checked = false;
+    if (el("relay-mode")) el("relay-mode").checked = false;
     return;
   }
   s.relay_active_for = on ? sess.session_id : null;
@@ -66,30 +94,36 @@ function toggleRelay(on) {
 }
 function updateRelayInfo() {
   const info = el("relay-info");
+  if (!info || !currentStudent) return;
   if (currentStudent.relay_active_for) {
-    info.textContent = "\u26A1 Relay active for session " + currentStudent.relay_active_for +
+    info.textContent = "⚡ Relay active for session " + currentStudent.relay_active_for +
       ". You forward messages but have NO authority to mark attendance.";
     info.className = "msg ok";
-  } else info.textContent = "";
+  } else { info.textContent = ""; info.className = "msg"; }
 }
 
 /* ---- BLE scan (spec §5) ------------------------------------------ */
 function gotoScan() {
+  stopScan();
   document.querySelectorAll(".phone-page").forEach(p => p.classList.remove("active"));
   el("sp-scan").classList.add("active");
   el("scan-result").innerHTML = "";
+  updateBleStatus();
+  const h = el("sp-scan").querySelector("h3");
   let dots = 0;
   scanTimer = setInterval(() => {
     dots = (dots + 1) % 4;
-    el("sp-scan").querySelector("h3").textContent = "Scanning for teacher session" + ".".repeat(dots);
+    if (h) h.textContent = "Scanning for teacher session" + ".".repeat(dots);
   }, 400);
-  setTimeout(() => {
-    clearInterval(scanTimer);
+  scanTimeout = setTimeout(() => {
     stopScan();
     renderScanResult();
   }, 2200);
 }
-function stopScan() { if (scanTimer) { clearInterval(scanTimer); scanTimer = null; } }
+function stopScan() {
+  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  if (scanTimeout) { clearTimeout(scanTimeout); scanTimeout = null; }
+}
 
 /* ---- Real BLE (Web Bluetooth) --------------------------------------
    Web Bluetooth requires a SECURE CONTEXT: https:// or http://localhost.
@@ -107,21 +141,23 @@ function bleCapability() {
 }
 
 function updateBleStatus() {
-  const badge = el("ble-status");
-  if (!badge) return;
   const cap = bleCapability();
-  if (cap.ok) {
-    badge.textContent = "\u{1F534} Real BLE available \u2014 verification will connect to a real device";
-    badge.className = "badge ok";
-  } else {
-    badge.textContent = "\u26A0 " + cap.reason;
-    badge.className = "badge warn";
-  }
+  const text = cap.ok
+    ? "Real BLE available — verification will attempt a real device connection"
+    : cap.reason;
+  const cls = "badge " + (cap.ok ? "ok" : "warn");
+  const b1 = el("ble-status");
+  if (b1) { b1.textContent = text; b1.className = cls; }
+  const b2 = el("ble-status-scan");
+  if (b2) { b2.textContent = text; b2.className = cls; }
 }
 
 async function tryRealBLE() {
   try {
-    const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true });
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [UUIDS.service] }],
+      optionalServices: [UUIDS.service, UUIDS.session, UUIDS.request, UUIDS.challenge, UUIDS.response, UUIDS.result, UUIDS.relay]
+    });
     const server = await device.gatt.connect();
     let rssi = null;
     try {
@@ -149,31 +185,39 @@ async function tryRealBLE() {
 function renderScanResult() {
   const box = el("scan-result");
   updateBleStatus();
-  const activeSession = getActiveSession();
-  if (!activeSession) {
-    box.innerHTML = '<div class="step fail">\u2718 No active classroom session found.<br>' +
+  const sess = getActiveSession();
+  if (!sess) {
+    box.innerHTML = '<div class="step fail">✘ No active classroom session found.<br>' +
       "<small>Bluetooth is on and permissions granted (simulated), but the teacher has not started attendance.</small></div>";
     return;
   }
-  if (me().class_id !== activeSession.class_id) {
-    box.innerHTML = '<div class="step fail">\u2718 This session belongs to class ' +
-      esc(activeSession.class_id) + " \u2014 you are enrolled in " + esc(me().class_id) + ".</div>";
+  const myself = me();
+  if (!myself) { box.innerHTML = '<div class="step fail">Not authenticated.</div>'; return; }
+  if (myself.class_id !== sess.class_id) {
+    box.innerHTML = '<div class="step fail">✘ This session belongs to class ' +
+      esc(sess.class_id) + " — you are enrolled in " + esc(myself.class_id) + ".</div>";
     return;
   }
-  const rssi = simulateRSSI();
+  const rssi = simulateRSSI(myPosition());
   const p = proximityLabel(rssi);
   const cap = bleCapability();
+  const teacherName = esc((DB.teachers.find(t => t.teacher_id === sess.teacher_id) || {}).name || "Unknown");
   box.innerHTML =
-    '<div class="step pass">\u2713 Classroom Session Found</div>' +
-    '<div class="step">Subject: <b>' + esc(activeSession.subject) + "</b></div>" +
-    '<div class="step">Teacher: ' + esc(DB.teachers.find(t => t.teacher_id === activeSession.teacher_id).name) + "</div>" +
-    '<div class="step mono">Session: ' + esc(activeSession.session_id) + "</div>" +
-    '<div class="step">BLE Signal: <span class="badge ' + p.cls + '">' + p.label + "</span> " +
-    '<small class="mono">' + rssi + " dBm</small> <small>(proximity evidence, not distance)</small></div>" +
-    '<div class="step"><small>' + (cap.ok
-      ? "\u{1F534} Online mode: a real Web Bluetooth connection will be attempted when you verify."
-      : "\u26A0 " + esc(cap.reason) + ".") + "</small></div>" +
-    '<button class="btn primary block" onclick="beginVerification(\'DIRECT\')">VERIFY MY PRESENCE</button>';
+    '<div class="step pass">✓ Classroom Session Found</div>' +
+    '<div class="step">Subject: <b>' + esc(sess.subject) + "</b></div>" +
+    '<div class="step">Teacher: ' + teacherName + "</div>" +
+    '<div class="step mono">Session: ' + esc(sess.session_id) + "</div>" +
+    '<div class="step">BLE Signal: <span class="badge ' + esc(p.cls) + '">' + esc(p.label) + "</span> " +
+    '<small class="mono">' + Number(rssi) + " dBm</small> <small>(proximity evidence, not distance)</small></div>" +
+    '<div class="step"><small>' + esc(myPosition() === "outside"
+      ? "Simulated position is OUTSIDE — direct link is expected to fail. Use the relay path below."
+      : (cap.ok
+        ? "Real BLE mode: a Web Bluetooth connection will be attempted when you verify."
+        : cap.reason + ".")) + "</small></div>" +
+    '<button class="btn primary block" id="btn-verify-direct">Verify My Presence</button>' +
+    '<button class="btn block" id="btn-verify-relay">Verify via Relay</button>';
+  el("btn-verify-direct").addEventListener("click", () => beginVerification("DIRECT"));
+  el("btn-verify-relay").addEventListener("click", () => attemptRelay());
 }
 
 /* ---- Attendance request + challenge-response (spec §7/§8) -------- */
@@ -208,13 +252,19 @@ async function runVerification(routeType, relayInfo, realBle) {
 
   function step(name) {
     const d = document.createElement("div");
-    d.className = "step run"; d.innerHTML = name;
+    d.className = "step run"; d.textContent = name;
     steps.appendChild(d); return d;
   }
   function done(d, ok, note) {
     d.className = "step " + (ok ? "pass" : "fail");
-    d.innerHTML += " \u2014 " + (ok ? "\u2713" : "\u2718") + (note ? " <small>" + note + "</small>" : "");
+    const suffix = document.createElement("span");
+    suffix.innerHTML = " — " + (ok ? "✓" : "✘") + (note ? " <small>" + esc(note) + "</small>" : "");
+    d.appendChild(suffix);
     return ok;
+  }
+
+  if (routeType === "RELAY" && (!relayInfo || typeof relayInfo.hopCount !== "number" || relayInfo.hopCount < 1 || relayInfo.hopCount > MAX_HOPS)) {
+    return failResult("Invalid relay path (hop limit exceeded). NOT VERIFIED.");
   }
 
   /* 1. send request */
@@ -222,13 +272,12 @@ async function runVerification(routeType, relayInfo, realBle) {
   await sleep(700);
 
   /* teacher-side validation */
+  reloadDB();
   const session = getActiveSession();
-  if (!session) {
+  if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
     done(d, false, "session not active"); return failResult("Session expired or ended. NOT VERIFIED.");
   }
-  if (DB.seen_request_ids.includes(requestId)) {   // replay prevention
-    done(d, false, "duplicate request"); return failResult("Duplicate request rejected.");
-  }
+  if (DB.seen_request_ids.length > 500) DB.seen_request_ids = DB.seen_request_ids.slice(-200);
   DB.seen_request_ids.push(requestId); saveDB();
   done(d, true);
 
@@ -236,8 +285,9 @@ async function runVerification(routeType, relayInfo, realBle) {
      never from a typed-in ID */
   d = step("Teacher validates identity & registered device");
   await sleep(600);
-  if (!currentStudent || !authCtx) return failResult("Not authenticated.");
-  if (currentStudent.class_id !== session.class_id) return failResult("You are not enrolled in this class.");
+  me();
+  if (!currentStudent || !authCtx) { done(d, false, "not authenticated"); return failResult("Not authenticated."); }
+  if (currentStudent.class_id !== session.class_id) { done(d, false, "wrong class"); return failResult("You are not enrolled in this class."); }
   if (authCtx.deviceId !== currentStudent.registered_device_id) {
     rejectAttendance(currentStudent, "unregistered_phone");
     done(d, false, "unregistered phone"); return failResult("Device not registered to this student.");
@@ -253,7 +303,7 @@ async function runVerification(routeType, relayInfo, realBle) {
     used: false,
     sessionId: session.session_id
   };
-  done(d, true, '<span class="mono">' + currentChallenge.value.slice(0, 12) + "\u2026</span>");
+  done(d, true, currentChallenge.value.slice(0, 12) + "…");
 
   /* 3. compute response = SHA-256(challenge || device_secret) */
   d = step("Computing authenticated response");
@@ -278,43 +328,52 @@ async function runVerification(routeType, relayInfo, realBle) {
      otherwise simulated radio evidence. Proximity evidence only. */
   let rssi, rssiNote;
   if (realBle && realBle.ok) {
-    rssi = realBle.rssi != null ? realBle.rssi : simulateRSSI();
-    rssiNote = "real device \u201c" + realBle.name + "\u201d connected" +
-      (realBle.rssi != null ? ", RSSI " + realBle.rssi + " dBm" : " (RSSI unavailable \u2014 simulated)");
+    rssi = realBle.rssi != null ? realBle.rssi : simulateRSSI(myPosition());
+    rssiNote = "real device connected" +
+      (realBle.rssi != null ? ", RSSI " + realBle.rssi + " dBm" : " (RSSI unavailable — simulated)");
   } else if (realBle && realBle.skipped) {
-    rssi = simulateRSSI();
+    rssi = simulateRSSI(myPosition());
     rssiNote = realBle.reason;
   } else if (realBle && !realBle.ok) {
-    rssiNote = "real BLE failed (" + realBle.error + ") \u2014 fell back to simulation";
-    rssi = routeType === "DIRECT" ? simulateRSSI() : relayInfo.rssi;
+    rssiNote = "real BLE failed — fell back to simulation";
+    rssi = routeType === "DIRECT" ? simulateRSSI(myPosition()) : relayInfo.rssi;
   } else {
-    rssi = routeType === "DIRECT" ? simulateRSSI() : relayInfo.rssi;
+    rssi = routeType === "DIRECT" ? simulateRSSI(myPosition()) : relayInfo.rssi;
     rssiNote = null;
   }
 
+  reloadDB();
+  const live = getActiveSession();
+  if (!live || live.session_id !== session.session_id || live.status !== "ACTIVE" || now() >= live.expiration_time) {
+    done(d, false, "session expired mid-verification"); return failResult("Session expired during verification. NOT VERIFIED.");
+  }
   const dup = DB.attendance.some(a => a.session_id === session.session_id && a.student_id === currentStudent.student_id);
   if (dup) { done(d, false, "already recorded this session"); return failResult("Attendance already requested for this session."); }
 
   if (routeType === "DIRECT") {
     if (rssi <= RSSI_FLOOR) {
       done(d, false, "no usable BLE link (" + rssi + " dBm)");
-      return failResult("No direct BLE connection. Try the relay path. NOT VERIFIED (not absent).");
+      return failResult("No direct BLE connection. Try the relay path below. NOT VERIFIED (not absent).");
     }
-    done(d, true, rssiNote ? (rssiNote + " \u2014 proximity evidence recorded") : ("RSSI " + rssi + " dBm \u2014 proximity evidence recorded"));
-    recordAttendance(currentStudent, "DIRECT", rssi, 0, null);
+    done(d, true, rssiNote ? (rssiNote + " — proximity evidence recorded") : ("RSSI " + rssi + " dBm — proximity evidence recorded"));
+    const ok = recordAttendance(currentStudent, "DIRECT", rssi, 0, null);
+    if (!ok) { done(d, false, "rejected by teacher validation"); return failResult("Rejected by teacher validation (duplicate/expired)."); }
     return successResult(rssi, "DIRECT", null, 0);
   }
 
   /* RELAY: communication works, but a relay does NOT prove physical
      presence (spec §15). Evidence stays weak -> teacher review. */
-  done(d, true, "relayed via " + relayInfo.viaStudent + " \u2014 hop " + relayInfo.hopCount + "/" + MAX_HOPS);
+  if (relayInfo.hopCount > MAX_HOPS) { done(d, false, "hop limit exceeded"); return failResult("Hop limit exceeded — message discarded."); }
+  done(d, true, "relayed via " + relayInfo.viaStudent + " — hop " + relayInfo.hopCount + "/" + MAX_HOPS);
+  reloadDB();
   DB.relay_events.push({
     event_id: uid("rl"), message_id: uid("msg"), session_id: session.session_id,
     source_student_id: currentStudent.student_id, relay_student_id: relayInfo.viaStudent,
     hop_count: relayInfo.hopCount, timestamp: now(), status: "FORWARDED"
   });
   saveDB();
-  recordAttendance(currentStudent, "RELAY", rssi, relayInfo.hopCount, relayInfo.viaStudent);
+  const okRelay = recordAttendance(currentStudent, "RELAY", rssi, relayInfo.hopCount, relayInfo.viaStudent);
+  if (!okRelay) { done(d, false, "rejected by teacher validation"); return failResult("Rejected by teacher validation (duplicate/expired)."); }
   successResult(rssi, "RELAY", relayInfo.viaStudent, relayInfo.hopCount);
 }
 
@@ -323,20 +382,20 @@ function failResult(text) {
   el("sp-result").classList.add("active");
   el("result-content").innerHTML =
     '<div class="panel" style="text-align:center"><h2 style="color:var(--amber)">NOT VERIFIED</h2>' +
-    "<p class='muted' style='margin-top:8px'>" + text + "</p>" +
-    "<p class='muted' style='margin-top:8px'><small>You are NOT marked absent \u2014 contact your teacher.</small></p></div>";
+    "<p class='muted' style='margin-top:8px'>" + esc(text) + "</p>" +
+    "<p class='muted' style='margin-top:8px'><small>You are NOT marked absent — contact your teacher.</small></p></div>";
 }
 
 function successResult(rssi, route, via, hops) {
   document.querySelectorAll(".phone-page").forEach(p => p.classList.remove("active"));
   el("sp-result").classList.add("active");
   el("result-content").innerHTML =
-    '<div class="panel" style="text-align:center"><h2 style="color:var(--green)">\u2713 VERIFICATION COMPLETE</h2>' +
+    '<div class="panel" style="text-align:center"><h2 style="color:var(--green)">✓ VERIFICATION COMPLETE</h2>' +
     "<p class='muted' style='margin-top:8px'>Your presence request passed all checks and is <b>eligible</b>.<br>" +
     "The teacher finalizes attendance.</p>" +
-    '<p class="mono muted" style="margin-top:10px">Route: ' + route +
-    (via ? " via " + via + " (" + hops + "/" + MAX_HOPS + " hops)" : "") +
-    " \u00b7 RSSI: " + rssi + " dBm (evidence)</p></div>";
+    '<p class="mono muted" style="margin-top:10px">Route: ' + esc(route) +
+    (via ? " via " + esc(via) + " (" + Number(hops) + "/" + Number(MAX_HOPS) + " hops)" : "") +
+    " · RSSI: " + Number(rssi) + " dBm (evidence)</p></div>";
 }
 
 /* ---- Relay path (spec §11–§14) -----------------------------------
@@ -345,42 +404,51 @@ function successResult(rssi, route, via, hops) {
    modify identity, status, or authorize attendance.
 -------------------------------------------------------------------- */
 function attemptRelay() {
-  me();
+  const myself = me();
+  if (!myself) return failResult("Not authenticated — relay unavailable.");
   const sess = getActiveSession();
-  const relays = DB.students.filter(s =>
-    s.student_id !== currentStudent.student_id &&
-    s.class_id === currentStudent.class_id &&          // relay must be a classmate
-    s.relay_active_for === sess?.session_id &&         // session ID string, not the object
-    simulateRSSI() > RSSI_FLOOR);
+  if (!sess) return failResult("No active session — relay unavailable.");
+  // Measure each candidate once; prefer strongest (shortest reliable) route.
+  const candidates = DB.students
+    .filter(s =>
+      s.student_id !== myself.student_id &&
+      s.class_id === myself.class_id &&          // relay must be a classmate
+      s.relay_active_for === sess.session_id)    // session-bound opt-in
+    .map(s => ({ s, rssi: simulateRSSI(s.position || "near") }))
+    .filter(c => c.rssi > RSSI_FLOOR)
+    .sort((a, b) => b.rssi - a.rssi);
 
-  if (!sess) return failResult("No active session \u2014 relay unavailable.");
-  if (!relays.length) {
+  if (!candidates.length) {
+    reloadDB();
     DB.attendance_events.push({ event_id: uid("evt"), ts: new Date().toISOString(), event_type: "RELAY_UNAVAILABLE",
-      student_id: currentStudent.student_id });
+      student_id: myself.student_id, session_id: sess.session_id });
     saveDB();
-    return failResult("No relay available. NOT VERIFIED (not absent) \u2014 move closer or ask a classmate to enable relay mode.");
+    return failResult("No relay available. NOT VERIFIED (not absent) — move closer or ask a classmate to enable relay mode.");
   }
-  relays.sort((a, b) => simulateRSSI() - simulateRSSI());       // prefer shortest reliable route
-  const relay = relays[0];
+  const best = candidates[0];
   const hopCount = 2;                                              // Teacher->A->B
-  if (hopCount > MAX_HOPS) return failResult("Hop limit exceeded \u2014 message discarded.");
+  if (hopCount > MAX_HOPS) return failResult("Hop limit exceeded — message discarded.");
 
   beginVerification("RELAY", {
-    viaStudent: relay.name + " (" + relay.student_id + ")",
+    viaStudent: best.s.name + " (" + best.s.student_id + ")",
     hopCount: hopCount,
-    rssi: -70 + (crypto.getRandomValues(new Uint8Array(1))[0] % 10)
+    rssi: best.rssi
   });
 }
 
 /* ---- History ------------------------------------------------------ */
 function renderHistory() {
+  me();
+  if (!currentStudent) return;
   document.querySelectorAll(".phone-page").forEach(p => p.classList.remove("active"));
   el("sp-history").classList.add("active");
+  reloadDB();
   const rows = DB.attendance.filter(a => a.student_id === currentStudent.student_id).map(a => {
     const sess = DB.sessions.find(s => s.session_id === a.session_id);
-    return "<tr><td>" + new Date(a.timestamp).toLocaleString() + "</td><td>" +
-      (sess ? sess.subject : "?") + '</td><td><span class="st-' + a.verification_status + '">' +
-      a.verification_status + "</span></td><td>" + a.route_type + "</td></tr>";
+    const safeStatus = esc(a.verification_status);
+    return "<tr><td>" + esc(new Date(a.timestamp).toLocaleString()) + "</td><td>" +
+      esc(sess ? sess.subject : "?") + '</td><td><span class="st-' + safeStatus + '">' +
+      safeStatus + "</span></td><td>" + esc(a.route_type) + "</td></tr>";
   });
   el("history-body").innerHTML = rows.length ? rows.join("") :
     '<tr><td colspan="4" class="muted">No records yet.</td></tr>';

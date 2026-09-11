@@ -23,7 +23,7 @@ const UUIDS = {
 
 /* ---------------- helpers ---------------- */
 function el(id) { return document.getElementById(id); }
-function val(id) { return el(id).value.trim(); }
+function val(id) { const n = el(id); return n ? n.value.trim() : ""; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
@@ -36,9 +36,34 @@ function randHex(n) {
   return [...a].map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 function now() { return Date.now(); }
+/* Spotlight "More ..." toggle on the landing page */
+function toggleSpotlight() {
+  const extra = el("spot-extra");
+  const link = el("spot-toggle");
+  if (!extra || !link) return;
+  const hidden = extra.classList.toggle("hidden");
+  link.textContent = hidden ? "More ..." : "Less";
+}
+/* Click-to-copy for credential chips (event delegation, works for dynamic content) */
+document.addEventListener("click", e => {
+  const c = e.target && e.target.closest ? e.target.closest("code[data-copy]") : null;
+  if (!c) return;
+  const t = c.getAttribute("data-copy");
+  const flash = msg => {
+    const o = c.textContent;
+    c.textContent = msg;
+    setTimeout(() => { c.textContent = o; }, 900);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(() => flash("copied"), () => flash(t));
+});
 function esc(s) {
-  return String(s).replace(/[&<>"']/g, c =>
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+/* Escape for embedding inside single-quoted JS strings in inline handlers */
+function escJS(s) {
+  return String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/</g, "\\x3c");
 }
 async function hashPassword(id, pw) { return sha256hex("salt_" + id + pw); }
 function teacherClasses(teacherId) {
@@ -51,19 +76,36 @@ function teacherClasses(teacherId) {
 let DB = null;
 const DB_KEY = "ble_attendance_db_v2";
 
-function saveDB() { localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+function saveDB() {
+  try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+  catch (e) { console.error("saveDB failed:", e); }
+}
 /* Re-read the shared DB so multi-tab play stays consistent */
 function reloadDB() {
-  const raw = localStorage.getItem(DB_KEY);
-  if (raw) DB = JSON.parse(raw);
+  try {
+    const raw = localStorage.getItem(DB_KEY);
+    if (raw) DB = JSON.parse(raw);
+  } catch (e) {
+    console.error("reloadDB: corrupted DB, keeping in-memory copy", e);
+  }
 }
 function loadDB() {
-  const raw = localStorage.getItem(DB_KEY);
-  if (raw) {
-    DB = JSON.parse(raw);
-    DB.admins = DB.admins || [];
-    DB.schedules = DB.schedules || [];
-    return;
+  try {
+    const raw = localStorage.getItem(DB_KEY);
+    if (raw) {
+      DB = JSON.parse(raw);
+      DB.admins = DB.admins || [];
+      DB.schedules = DB.schedules || [];
+      DB.attendance = DB.attendance || [];
+      DB.attendance_events = DB.attendance_events || [];
+      DB.relay_events = DB.relay_events || [];
+      DB.audit_logs = DB.audit_logs || [];
+      DB.seen_request_ids = DB.seen_request_ids || [];
+      DB.seen_message_ids = DB.seen_message_ids || [];
+      return;
+    }
+  } catch (e) {
+    console.error("loadDB: corrupted, re-seeding", e);
   }
   DB = {
     admins: [], teachers: [], students: [], classes: [], schedules: [],
@@ -110,12 +152,15 @@ async function seed() {
 
 /* ---------------- BLE simulation ---------------- */
 /* RSSI is PROXIMITY EVIDENCE only — never exact distance (spec §9).
-   Students no longer self-declare a position; the simulated link assumes
-   an in-classroom device. Real Web Bluetooth RSSI overrides this when
-   available (online mode). */
-function simulateRSSI() {
+   Simulated position (near / back / outside) drives the base RSSI so
+   boundary/outside + relay scenarios can be tested. Real Web Bluetooth
+   RSSI overrides this when available (online mode). */
+function simulateRSSI(position) {
   const noise = (crypto.getRandomValues(new Uint8Array(1))[0] % 13) - 6;
-  return -56 + noise;
+  let base = -56; // near
+  if (position === "back") base = -72;
+  else if (position === "outside") base = -95;
+  return base + noise;
 }
 function proximityLabel(rssi) {
   if (rssi > -60) return { label: "STRONG", cls: "ok" };

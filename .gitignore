@@ -1,0 +1,19 @@
+# .NET / Android / Python / SQLite / Node
+bin/
+obj/
+out/
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+__pycache__/
+.venv/
+venv/
+*.db
+*.sqlite
+*.sqlite-journal
+node_modules/
+.vs/
+.idea/
+*.user
