@@ -51,8 +51,9 @@ async function teacherLogin() {
   const t = DB.teachers.find(x => x.teacher_id === val("t-id").toUpperCase());
   const msg = el("t-login-msg");
   if (!t || (await sha256hex("salt_" + t.teacher_id + val("t-pass"))) !== t.password_hash) {
-    msg.textContent = "Invalid credentials."; msg.className = "msg err"; return;
+    msg.textContent = "Invalid credentials. Check your ID and password."; msg.className = "msg err"; return;
   }
+  msg.textContent = ""; msg.className = "msg";
   currentTeacher = t;
   el("t-name").textContent = t.name;
   // Capability detection (spec §2: never assume peripheral-mode support)
@@ -62,8 +63,9 @@ async function teacherLogin() {
   // Only classes scheduled/assigned to THIS teacher are selectable
   const mine = teacherClasses(t.teacher_id);
   el("class-select").innerHTML = mine.length
-    ? mine.map(c => '<option value="' + esc(c.class_id) + '">' + esc(c.class_id) + " \u2014 " + esc(c.subject) + "</option>").join("")
+    ? mine.map(c => '<option value="' + esc(c.class_id) + '">' + esc(c.class_id) + " — " + esc(c.subject) + "</option>").join("")
     : '<option value="">No classes assigned — contact admin</option>';
+  el("btn-start").disabled = !mine.length;
   audit("TEACHER_LOGIN", t.teacher_id);
   renderLiveTable();
   renderAudit();
