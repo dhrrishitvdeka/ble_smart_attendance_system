@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Header, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 import jwt
 
 from .database import SessionLocal, init_db
-from .models import Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog
+from .models import Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent
 
 init_db()
 
@@ -28,6 +29,15 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="BLE Attendance Cloud Sync", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 def get_db():
@@ -283,4 +293,169 @@ def list_session_v2(
         }
         for r in rows
     ]
+
+
+class RelayEventIn(BaseModel):
+    event_id: str
+    session_id: str
+    message_id: str
+    source_student_id: str
+    relay_student_id: str
+    hop_count: int = 1
+    timestamp: int
+    status: str = "FORWARDED"
+
+
+@app.post("/api/relay-events")
+def sync_relay_event(
+    item: RelayEventIn,
+    auth: Optional[dict] = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    existing = db.get(RelayEvent, item.event_id)
+    if existing:
+        return {"status": "duplicate_ignored", "event_id": item.event_id}
+    db.add(RelayEvent(**item.model_dump()))
+    db.commit()
+    return {"status": "stored", "event_id": item.event_id}
+
+
+@app.post("/api/relay-events/batch")
+def sync_relay_batch(
+    items: list[RelayEventIn],
+    auth: Optional[dict] = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    stored, ignored = 0, 0
+    for item in items:
+        if db.get(RelayEvent, item.event_id):
+            ignored += 1
+            continue
+        db.add(RelayEvent(**item.model_dump()))
+        stored += 1
+    db.commit()
+    return {"stored": stored, "duplicates_ignored": ignored}
+
+
+@app.get("/api/relay-events/{session_id}")
+def list_session_relay_events(
+    session_id: str,
+    auth: Optional[dict] = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    if auth and auth.get("role") == "student":
+        sid = auth.get("sub")
+        rows = db.scalars(
+            select(RelayEvent)
+            .where(RelayEvent.session_id == session_id)
+            .where((RelayEvent.source_student_id == sid) | (RelayEvent.relay_student_id == sid))
+        ).all()
+    else:
+        rows = db.scalars(select(RelayEvent).where(RelayEvent.session_id == session_id)).all()
+
+    return [
+        {
+            "event_id": r.event_id,
+            "session_id": r.session_id,
+            "message_id": r.message_id,
+            "source_student_id": r.source_student_id,
+            "relay_student_id": r.relay_student_id,
+            "hop_count": r.hop_count,
+            "timestamp": r.timestamp,
+            "status": r.status,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/v2/relay-events")
+def sync_relay_event_v2(
+    item: RelayEventIn,
+    user: dict = Depends(require_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.get(RelayEvent, item.event_id)
+    if existing:
+        return {"status": "duplicate_ignored", "event_id": item.event_id}
+    db.add(RelayEvent(**item.model_dump()))
+    db.commit()
+    return {"status": "stored", "event_id": item.event_id, "submitted_by": user["sub"]}
+
+
+@app.post("/api/v2/relay-events/batch")
+def sync_relay_batch_v2(
+    items: list[RelayEventIn],
+    user: dict = Depends(require_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    stored, ignored = 0, 0
+    for item in items:
+        if db.get(RelayEvent, item.event_id):
+            ignored += 1
+            continue
+        db.add(RelayEvent(**item.model_dump()))
+        stored += 1
+    db.commit()
+    return {"stored": stored, "duplicates_ignored": ignored, "submitted_by": user["sub"]}
+
+
+@app.get("/api/v2/relay-events/{session_id}")
+def list_session_relay_events_v2(
+    session_id: str,
+    user: dict = Depends(require_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    if user["role"] == "student":
+        sid = user["sub"]
+        rows = db.scalars(
+            select(RelayEvent)
+            .where(RelayEvent.session_id == session_id)
+            .where((RelayEvent.source_student_id == sid) | (RelayEvent.relay_student_id == sid))
+        ).all()
+    else:
+        rows = db.scalars(select(RelayEvent).where(RelayEvent.session_id == session_id)).all()
+
+    return [
+        {
+            "event_id": r.event_id,
+            "session_id": r.session_id,
+            "message_id": r.message_id,
+            "source_student_id": r.source_student_id,
+            "relay_student_id": r.relay_student_id,
+            "hop_count": r.hop_count,
+            "timestamp": r.timestamp,
+            "status": r.status,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/classes")
+def list_classes(db: Session = Depends(get_db)):
+    rows = db.scalars(select(CourseClass)).all()
+    return [
+        {
+            "class_id": c.class_id,
+            "class_name": c.class_name,
+            "subject": c.subject,
+            "teacher_id": c.teacher_id,
+        }
+        for c in rows
+    ]
+
+
+@app.get("/api/classes/{class_id}/roster")
+def get_class_roster(class_id: str, db: Session = Depends(get_db)):
+    rows = db.scalars(select(Student).where(Student.class_id == class_id)).all()
+    return [
+        {
+            "student_id": s.student_id,
+            "name": s.name,
+            "email": s.email,
+            "registered_device_id": s.registered_device_id,
+            "class_id": s.class_id,
+        }
+        for s in rows
+    ]
+
 

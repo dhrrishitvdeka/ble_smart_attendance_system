@@ -139,6 +139,7 @@ if (autoDemo)
         using var sha = SHA256.Create();
         string responseHash = Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(chNonce + s3.DeviceSecret))).ToLower();
         Console.WriteLine($"Simulating Student S003 (Rohan Verma) 2-hop mesh relay via Student S002...");
+        db.RecordRelayEvent($"rl_{Guid.NewGuid():N}", session.SessionId, $"msg_{Guid.NewGuid():N}", s3.StudentId, "S002", 2, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), "FORWARDED");
         gattServer.VerifyAndCommit(s3.StudentId, s3.RegisteredDeviceId, responseHash, "RELAY", -74, 2, "Diya Patel (S002)");
     }
 
@@ -153,7 +154,7 @@ if (autoDemo)
     // Authenticated Cloud Sync
     Console.WriteLine("\nAttempting Authenticated Cloud Sync to http://localhost:8000...");
     var cloudToken = await cloudSync.LoginToCloudAsync("http://localhost:8000", teacher.TeacherId, teacherPassword);
-    var (ok, count, msg) = await cloudSync.SyncBatchAsync("http://localhost:8000", cloudToken);
+    var (ok, attCount, relayCount, msg) = await cloudSync.SyncAllAsync("http://localhost:8000", cloudToken);
     Console.WriteLine($"Cloud Sync Result: {msg}");
 
     Console.WriteLine("\n===============================================================");
@@ -206,8 +207,8 @@ while (running)
 
         case "s":
             Console.WriteLine("Syncing with cloud backend at http://localhost:8000...");
-            var token = await cloudSync.LoginToCloudAsync("http://localhost:8000", "T001", "teach123");
-            var res = await cloudSync.SyncBatchAsync("http://localhost:8000", token);
+            var token = await cloudSync.LoginToCloudAsync("http://localhost:8000", teacher.TeacherId, teacherPassword);
+            var res = await cloudSync.SyncAllAsync("http://localhost:8000", token);
             Console.WriteLine($"Result: {res.Message}");
             break;
 

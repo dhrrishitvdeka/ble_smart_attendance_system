@@ -36,8 +36,103 @@ class RelayManager(
 
     /**
      * Submit attendance via Mesh Relay when direct teacher GATT signal is weak or unreachable.
+     * Supports both real over-the-air BLE relay peer connection and hybrid simulation.
      */
-    fun submitMeshRelayAttendance(student: StudentProfile, session: AttendanceSession) {
+    fun submitMeshRelayAttendance(student: StudentProfile, session: AttendanceSession, peerDevice: android.bluetooth.BluetoothDevice? = null) {
+        if (session.hopCount >= Protocol.MAX_HOPS) {
+            listener.onRelayFailed("Hop limit exceeded (${session.hopCount} >= ${Protocol.MAX_HOPS}). Message discarded.")
+            return
+        }
+
+        if (peerDevice != null) {
+            listener.onRelayStatusChanged(AttendanceState.CONNECTING, "Connecting to classroom mesh relay peer (${peerDevice.address})...")
+            listener.onRelayLog("[RELAY] Initiating GATT link to mesh relay peer ${peerDevice.address}...")
+
+            peerDevice.connectGatt(context, false, object : android.bluetooth.BluetoothGattCallback() {
+                override fun onConnectionStateChange(gatt: android.bluetooth.BluetoothGatt?, status: Int, newState: Int) {
+                    if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
+                        listener.onRelayLog("[RELAY] Connected to relay peer. Discovering services...")
+                        gatt?.discoverServices()
+                    } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
+                        listener.onRelayLog("[RELAY] GATT link with peer closed.")
+                        gatt?.close()
+                    }
+                }
+
+                override fun onServicesDiscovered(gatt: android.bluetooth.BluetoothGatt?, status: Int) {
+                    val service = gatt?.getService(Protocol.SERVICE_UUID)
+                    val chChar = service?.getCharacteristic(Protocol.CHALLENGE_CHAR_UUID)
+                    if (chChar != null) {
+                        listener.onRelayStatusChanged(AttendanceState.CHALLENGING, "Requesting relayed challenge from peer...")
+                        gatt.readCharacteristic(chChar)
+                    } else {
+                        listener.onRelayFailed("Relay peer missing Attendance Challenge characteristic.")
+                    }
+                }
+
+                override fun onCharacteristicRead(
+                    gatt: android.bluetooth.BluetoothGatt?,
+                    characteristic: android.bluetooth.BluetoothGattCharacteristic?,
+                    status: Int
+                ) {
+                    val uuid = characteristic?.uuid ?: return
+                    val raw = characteristic.getStringValue(0) ?: ""
+
+                    if (uuid == Protocol.CHALLENGE_CHAR_UUID) {
+                        val nonce = raw.trim()
+                        listener.onRelayLog("[RELAY] Received peer challenge: $nonce")
+                        val hash = CryptoUtils.computeChallengeResponse(nonce, student.deviceSecret)
+                        val relayChar = gatt?.getService(Protocol.SERVICE_UUID)?.getCharacteristic(Protocol.RELAY_CHAR_UUID)
+                        if (relayChar != null) {
+                            val hopCount = if (session.hopCount in 1 until Protocol.MAX_HOPS) session.hopCount + 1 else 2
+                            val envelope = "RELAY|${student.studentId}|${student.registeredDeviceId}|$hash|$hopCount|${peerDevice.name ?: "Peer"}|${session.rssi}"
+                            relayChar.setValue(envelope)
+                            listener.onRelayLog("[RELAY] Writing mesh envelope to peer RELAY_CHAR: $envelope")
+                            gatt.writeCharacteristic(relayChar)
+                        } else {
+                            listener.onRelayFailed("Relay characteristic missing on peer.")
+                        }
+                    } else if (uuid == Protocol.RESULT_CHAR_UUID) {
+                        val parts = raw.split(":")
+                        val resStatus = parts.getOrNull(0) ?: "UNKNOWN"
+                        if (resStatus == "ELIGIBLE" || resStatus == "PRESENT") {
+                            val record = AttendanceRecord(
+                                id = "att_relay_${System.currentTimeMillis()}_${student.studentId}",
+                                sessionId = session.sessionId,
+                                studentId = student.studentId,
+                                status = "ELIGIBLE",
+                                routeType = "RELAY",
+                                rssi = session.rssi,
+                                hopCount = 2,
+                                viaStudent = peerDevice.name ?: "Relay Peer",
+                                timestamp = System.currentTimeMillis()
+                            )
+                            listener.onRelayStatusChanged(AttendanceState.ELIGIBLE, "ELIGIBLE — Verified via mesh relay peer!")
+                            listener.onRelaySuccess(record)
+                        } else {
+                            val reason = if (parts.size >= 3) parts[2] else (parts.getOrNull(1) ?: "Rejected by Teacher Authority")
+                            listener.onRelayFailed("Relay verification rejected: $reason")
+                        }
+                    }
+                }
+
+                override fun onCharacteristicWrite(
+                    gatt: android.bluetooth.BluetoothGatt?,
+                    characteristic: android.bluetooth.BluetoothGattCharacteristic?,
+                    status: Int
+                ) {
+                    if (characteristic?.uuid == Protocol.RELAY_CHAR_UUID) {
+                        listener.onRelayLog("[RELAY] Uplink written to peer. Reading result confirmation...")
+                        val resChar = gatt?.getService(Protocol.SERVICE_UUID)?.getCharacteristic(Protocol.RESULT_CHAR_UUID)
+                        if (resChar != null) {
+                            gatt.readCharacteristic(resChar)
+                        }
+                    }
+                }
+            }, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
+            return
+        }
+
         listener.onRelayStatusChanged(
             AttendanceState.CONNECTING,
             "Locating classroom mesh relay peer (Hop > 0)..."
