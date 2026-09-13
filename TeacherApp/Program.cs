@@ -69,7 +69,7 @@ if (classes.Count == 0)
 }
 var selectedClass = classes[0];
 var roster = db.GetClassStudents(selectedClass.ClassId);
-Console.WriteLine($"      Selected Class: {selectedClass.ClassId} — {selectedClass.Subject}");
+Console.WriteLine($"      Selected Class: {selectedClass.ClassId} — {selectedClass.Subject} (Class Code: {selectedClass.ClassCode})");
 Console.WriteLine($"      Enrolled Students: {roster.Count}");
 
 // 4. Session Initialization & GATT Server (spec §3/§4)
@@ -163,7 +163,7 @@ if (autoDemo)
     return;
 }
 
-Console.WriteLine("\nCommands: [v] Verify Student Demo | [m] Manual Override | [f] Finalize Session | [s] Cloud Sync | [q] Quit");
+Console.WriteLine("\nCommands: [v] Verify Student Demo | [m] Manual Override | [j] Enroll Student with Code | [c] Show Class Code | [f] Finalize Session | [s] Cloud Sync | [q] Quit");
 
 bool running = true;
 while (running)
@@ -174,6 +174,7 @@ while (running)
     {
         case "v":
             // Demo verification
+            roster = db.GetClassStudents(selectedClass.ClassId);
             var candidate = roster.FirstOrDefault(s => !db.GetSessionAttendance(session.SessionId).Any(a => a.StudentId == s.StudentId));
             if (candidate != null)
             {
@@ -195,6 +196,34 @@ while (running)
             db.RecordAttendance($"att_{Guid.NewGuid():N}", session.SessionId, sid, "PRESENT", "MANUAL", -50, 0, null);
             Console.WriteLine($"Student {sid} manually marked PRESENT.");
             RenderRosterTable(db, selectedClass.ClassId, session.SessionId);
+            break;
+
+        case "j":
+            Console.Write("Enter Student ID to enroll: ");
+            var joinSid = Console.ReadLine()?.Trim().ToUpper() ?? "";
+            Console.Write($"Enter Class Code (press Enter for '{selectedClass.ClassCode}'): ");
+            var joinCodeInput = Console.ReadLine()?.Trim();
+            var joinCode = string.IsNullOrWhiteSpace(joinCodeInput) ? selectedClass.ClassCode : joinCodeInput;
+            bool joinSuccess = db.JoinClassWithCode(joinSid, joinCode);
+            if (joinSuccess)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"[ENROLLED] Student {joinSid} successfully joined class using code '{joinCode}'.");
+                Console.ResetColor();
+                roster = db.GetClassStudents(selectedClass.ClassId);
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[FAILED] Could not enroll Student {joinSid}. Verify student exists and code is valid.");
+                Console.ResetColor();
+            }
+            RenderRosterTable(db, selectedClass.ClassId, session.SessionId);
+            break;
+
+        case "c":
+            Console.WriteLine($"\nActive Class: {selectedClass.ClassId} ({selectedClass.Subject})");
+            Console.WriteLine($"Class Code for Students: {selectedClass.ClassCode}");
             break;
 
         case "f":

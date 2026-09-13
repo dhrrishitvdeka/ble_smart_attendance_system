@@ -36,7 +36,12 @@ async function studentLogin() {
   const avatar = document.querySelector("#sp-home .avatar");
   if (avatar) avatar.textContent = (s.name || "S").trim().charAt(0).toUpperCase() || "S";
   el("p-device").textContent = "Device " + s.registered_device_id;
-  el("p-class").textContent = "Class " + s.class_id;
+  const enrolledList = (s.enrolled_classes && s.enrolled_classes.length) ? s.enrolled_classes.join(", ") : s.class_id;
+  el("p-class").textContent = "Classes: " + enrolledList;
+  const jInput = el("st-join-code");
+  if (jInput) jInput.value = "";
+  const jMsg = el("st-join-msg");
+  if (jMsg) { jMsg.textContent = ""; jMsg.className = "msg"; }
   el("relay-mode").checked = s.relay_active_for != null;
   const posSel = el("sim-position");
   if (posSel) posSel.value = s.position || "near";
@@ -45,6 +50,89 @@ async function studentLogin() {
   audit("STUDENT_LOGIN", s.student_id + " device=" + s.registered_device_id);
   showScreen("screen-student");
   studentHome();
+}
+
+async function joinClassByCode() {
+  const code = val("st-join-code").trim().toUpperCase();
+  const msg = el("st-join-msg");
+  if (!msg) return;
+  if (!code) {
+    msg.textContent = "Please enter a class code.";
+    msg.className = "msg err";
+    return;
+  }
+  const student = me();
+  if (!student) {
+    msg.textContent = "Not logged in.";
+    msg.className = "msg err";
+    return;
+  }
+
+  let cls = findClassByCode(code);
+
+  if (!cls) {
+    try {
+      const resp = await fetch("http://localhost:8000/api/classes/code/" + encodeURIComponent(code));
+      if (resp.ok) {
+        const remoteClass = await resp.json();
+        if (!DB.classes.some(c => c.class_id === remoteClass.class_id)) {
+          DB.classes.push({
+            class_id: remoteClass.class_id,
+            class_name: remoteClass.class_name,
+            subject: remoteClass.subject,
+            teacher_id: remoteClass.teacher_id,
+            class_code: remoteClass.class_code || remoteClass.class_id
+          });
+          saveDB();
+        }
+        cls = remoteClass;
+      }
+    } catch (_) { /* offline fallback */ }
+  }
+
+  if (!cls) {
+    msg.textContent = "Class code '" + esc(code) + "' not found. Check with your instructor.";
+    msg.className = "msg err";
+    return;
+  }
+
+  student.enrolled_classes = student.enrolled_classes || (student.class_id ? [student.class_id] : []);
+  const alreadyEnrolled = student.class_id === cls.class_id || student.enrolled_classes.includes(cls.class_id);
+  if (alreadyEnrolled) {
+    msg.textContent = "You are already enrolled in class " + esc(cls.class_id) + " (" + esc(cls.subject) + ").";
+    msg.className = "msg ok";
+    return;
+  }
+
+  if (!student.enrolled_classes.includes(cls.class_id)) {
+    student.enrolled_classes.push(cls.class_id);
+  }
+  student.class_id = cls.class_id;
+  saveDB();
+  currentStudent = student;
+
+  const pClass = el("p-class");
+  if (pClass) pClass.textContent = "Classes: " + student.enrolled_classes.join(", ");
+
+  msg.textContent = "✓ Successfully joined " + esc(cls.class_name) + " (" + esc(cls.subject) + ")!";
+  msg.className = "msg ok";
+
+  const joinInput = el("st-join-code");
+  if (joinInput) joinInput.value = "";
+
+  audit("STUDENT_JOIN_CLASS", student.student_id + " joined " + cls.class_id + " via code " + code);
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (student.cloudToken) {
+      headers["Authorization"] = "Bearer " + student.cloudToken;
+    }
+    fetch("http://localhost:8000/api/classes/join", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ student_id: student.student_id, class_code: code })
+    }).catch(() => {});
+  } catch (_) {}
 }
 function studentLogout() {
   reloadDB();
@@ -193,9 +281,12 @@ function renderScanResult() {
   }
   const myself = me();
   if (!myself) { box.innerHTML = '<div class="step fail">Not authenticated.</div>'; return; }
-  if (myself.class_id !== sess.class_id) {
+  const enrolled = (myself.enrolled_classes && myself.enrolled_classes.length)
+    ? myself.enrolled_classes
+    : [myself.class_id];
+  if (!enrolled.includes(sess.class_id)) {
     box.innerHTML = '<div class="step fail">✘ This session belongs to class ' +
-      esc(sess.class_id) + " — you are enrolled in " + esc(myself.class_id) + ".</div>";
+      esc(sess.class_id) + " — you are enrolled in " + esc(enrolled.join(", ")) + ".</div>";
     return;
   }
   const rssi = simulateRSSI(myPosition());

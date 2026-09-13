@@ -75,7 +75,7 @@ async function teacherLogin() {
   // Only classes scheduled/assigned to THIS teacher are selectable
   const mine = teacherClasses(t.teacher_id);
   el("class-select").innerHTML = mine.length
-    ? mine.map(c => '<option value="' + esc(c.class_id) + '">' + esc(c.class_id) + " — " + esc(c.subject) + "</option>").join("")
+    ? mine.map(c => '<option value="' + esc(c.class_id) + '">' + esc(c.class_id) + " (Code: " + esc(c.class_code || c.class_id) + ") — " + esc(c.subject) + "</option>").join("")
     : '<option value="">No classes assigned — contact admin</option>';
   el("btn-start").disabled = !mine.length;
   audit("TEACHER_LOGIN", t.teacher_id);
@@ -93,6 +93,8 @@ function restoreSession() {
   el("setup-panel").classList.add("hidden");
   el("session-panel").classList.remove("hidden");
   el("s-class").textContent = s.class_id;
+  const sCode = el("s-code");
+  if (sCode) sCode.textContent = s.class_code || s.class_id;
   el("s-subject").textContent = s.subject;
   el("s-id").textContent = s.session_id;
   el("s-nonce").textContent = s.random_nonce;
@@ -119,7 +121,9 @@ function startSession() {
   if (!cls) { alert("No class assigned to you. Ask the admin to schedule a class."); return; }
   activeSession = {
     session_id: randHex(8),                    // cryptographically random temp ID
-    class_id: cls.class_id, subject: cls.subject,
+    class_id: cls.class_id,
+    class_code: cls.class_code || cls.class_id,
+    subject: cls.subject,
     teacher_id: currentTeacher.teacher_id,
     start_time: now(),
     expiration_time: now() + SESSION_TTL_MS,
@@ -128,12 +132,14 @@ function startSession() {
   };
   DB.sessions.push(activeSession);
   DB.students.forEach(s => { s.relay_active_for = null; });   // relay only per-session
-  audit("SESSION_START", activeSession.session_id + " class=" + cls.class_id + " nonce=" + activeSession.random_nonce);
+  audit("SESSION_START", activeSession.session_id + " class=" + cls.class_id + " (code=" + activeSession.class_code + ") nonce=" + activeSession.random_nonce);
   saveDB();
 
   el("setup-panel").classList.add("hidden");
   el("session-panel").classList.remove("hidden");
   el("s-class").textContent = cls.class_id;
+  const sCode = el("s-code");
+  if (sCode) sCode.textContent = activeSession.class_code;
   el("s-subject").textContent = cls.subject;
   el("s-id").textContent = activeSession.session_id;
   el("s-nonce").textContent = activeSession.random_nonce;
@@ -225,7 +231,8 @@ async function teacherVerifyAttendanceSubmission(sessionId, studentId, deviceId,
     return { ok: false, reason: "Session expired or inactive." };
   }
   const student = DB.students.find(s => s.student_id === studentId);
-  if (!student || student.class_id !== session.class_id) {
+  const isEnrolled = student && (student.class_id === session.class_id || (student.enrolled_classes && student.enrolled_classes.includes(session.class_id)));
+  if (!isEnrolled) {
     return { ok: false, reason: "Student enrollment invalid for this class." };
   }
   if (deviceId !== student.registered_device_id) {
@@ -325,7 +332,7 @@ function recordAttendance(student, routeType, rssi, hopCount, viaStudent) {
   syncFromStorage();
   const session = getActiveSession();
   if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) return false;
-  if (!student || student.class_id !== session.class_id) return false;
+  if (!student || (student.class_id !== session.class_id && !(student.enrolled_classes && student.enrolled_classes.includes(session.class_id)))) return false;
   if (routeType !== "DIRECT" && routeType !== "RELAY") return false;
   if (typeof rssi !== "number" || rssi <= RSSI_FLOOR) return false;
   if (routeType === "RELAY" && ((hopCount || 0) < 1 || (hopCount || 0) > MAX_HOPS)) return false;
@@ -337,25 +344,29 @@ function recordAttendance(student, routeType, rssi, hopCount, viaStudent) {
     student_id: student.student_id,
     timestamp: now(),
     verification_status: "ELIGIBLE",       // awaits teacher finalize
-    route_type: routeType,                 // DIRECT | RELAY
-    rssi_evidence: rssi,                   // proximity evidence only
+    route_type: routeType,
+    rssi_evidence: rssi,
     hop_count: hopCount || 0,
     via_student: viaStudent || null,
     synced: false
   };
   DB.attendance.push(rec);
-  DB.attendance_events.push({ event_id: uid("evt"), ts: new Date().toISOString(),     event_type: "ATTENDANCE_RECORDED",
-    student_id: rec.student_id, session_id: rec.session_id, route: routeType });
+  DB.attendance_events.push({
+    event_id: uid("evt"),
+    ts: new Date().toISOString(),
+    event_type: "ATTENDANCE_RECORDED",
+    student_id: rec.student_id,
+    session_id: rec.session_id,
+    route: routeType
+  });
   audit("ATTENDANCE_RECORDED", rec.student_id + " route=" + routeType + " rssi=" + rssi + "dBm" +
     (viaStudent ? " via=" + viaStudent : ""));
   saveDB();
-  if (currentTeacher) renderLiveTable();
   return true;
 }
 
 function rejectAttendance(student, reason) {
   syncFromStorage();
-  if (!student) return;
   DB.attendance_events.push({ event_id: uid("evt"), ts: new Date().toISOString(), event_type: "REQUEST_REJECTED",
     student_id: student.student_id, session_id: activeSession ? activeSession.session_id : "-", reason });
   audit("REQUEST_REJECTED", student.student_id + " reason=" + reason);
@@ -365,7 +376,7 @@ function rejectAttendance(student, reason) {
 /* ---- Live dashboard (spec §16) ---------------------------------- */
 function rosterStatuses() {
   const cls = activeSession ? activeSession.class_id : el("class-select").value;
-  return DB.students.filter(s => s.class_id === cls).map(st => ({
+  return DB.students.filter(s => s.class_id === cls || (s.enrolled_classes && s.enrolled_classes.includes(cls))).map(st => ({
     st,
     rec: DB.attendance.find(a => a.session_id === (activeSession ? activeSession.session_id : "_") && a.student_id === st.student_id)
   }));

@@ -12,7 +12,7 @@ from sqlalchemy import select
 import jwt
 
 from .database import SessionLocal, init_db
-from .models import Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent
+from .models import Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent, Enrollment
 
 init_db()
 
@@ -131,6 +131,19 @@ class AttendanceIn(BaseModel):
     hop_count: int = 0
     via_student: str | None = None
     teacher_signature: str | None = None
+
+
+class ClassCreate(BaseModel):
+    class_id: str
+    class_name: str
+    subject: str
+    teacher_id: Optional[str] = None
+    class_code: Optional[str] = None
+
+
+class JoinClassRequest(BaseModel):
+    student_id: Optional[str] = None
+    class_code: str
 
 
 @app.get("/health")
@@ -439,23 +452,325 @@ def list_classes(db: Session = Depends(get_db)):
             "class_name": c.class_name,
             "subject": c.subject,
             "teacher_id": c.teacher_id,
+            "class_code": c.class_code or c.class_id,
         }
         for c in rows
     ]
 
 
+@app.post("/api/classes")
+def create_class(
+    item: ClassCreate,
+    auth: Optional[dict] = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    if auth:
+        role = auth.get("role")
+        if role not in ("teacher", "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only teachers or administrators are authorized to create classes"
+            )
+    elif ENFORCE_AUTH:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    cid = item.class_id.strip().upper() if item.class_id else ""
+    if not cid:
+        raise HTTPException(status_code=400, detail="Class ID cannot be empty")
+    if len(cid) > 32:
+        raise HTTPException(status_code=400, detail="Class ID cannot exceed 32 characters")
+
+    cname = item.class_name.strip() if item.class_name else ""
+    if not cname:
+        raise HTTPException(status_code=400, detail="Class name cannot be empty")
+    if len(cname) > 128:
+        raise HTTPException(status_code=400, detail="Class name cannot exceed 128 characters")
+
+    subj = item.subject.strip() if item.subject else ""
+    if not subj:
+        raise HTTPException(status_code=400, detail="Subject cannot be empty")
+    if len(subj) > 128:
+        raise HTTPException(status_code=400, detail="Subject cannot exceed 128 characters")
+
+    tid = item.teacher_id.strip().upper() if item.teacher_id and item.teacher_id.strip() else None
+    if tid:
+        if len(tid) > 32:
+            raise HTTPException(status_code=400, detail="Teacher ID cannot exceed 32 characters")
+        teacher = db.get(Teacher, tid)
+        if not teacher:
+            raise HTTPException(status_code=400, detail=f"Teacher ID '{tid}' not found in registry")
+
+    code = (item.class_code.strip().upper() if item.class_code and item.class_code.strip() else cid)
+    if len(code) > 32:
+        raise HTTPException(status_code=400, detail="Class code cannot exceed 32 characters")
+
+    existing = db.get(CourseClass, cid)
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Class ID '{cid}' already exists")
+
+    # Check if class_code already in use
+    code_exists = db.scalars(
+        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
+    ).first()
+    if code_exists:
+        raise HTTPException(status_code=400, detail=f"Class code '{code}' is already in use by class '{code_exists.class_id}'")
+
+    new_class = CourseClass(
+        class_id=cid,
+        class_name=cname,
+        subject=subj,
+        teacher_id=tid,
+        class_code=code,
+    )
+    db.add(new_class)
+    db.commit()
+    return {
+        "class_id": new_class.class_id,
+        "class_name": new_class.class_name,
+        "subject": new_class.subject,
+        "teacher_id": new_class.teacher_id,
+        "class_code": new_class.class_code,
+    }
+
+
+@app.get("/api/classes/code/{class_code}")
+def get_class_by_code(class_code: str, db: Session = Depends(get_db)):
+    code = class_code.strip().upper() if class_code else ""
+    if not code:
+        raise HTTPException(status_code=400, detail="Class code cannot be empty")
+    course = db.scalars(
+        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail=f"No class found with code '{code}'")
+    return {
+        "class_id": course.class_id,
+        "class_name": course.class_name,
+        "subject": course.subject,
+        "teacher_id": course.teacher_id,
+        "class_code": course.class_code or course.class_id,
+    }
+
+
+@app.post("/api/classes/join")
+def join_class_by_code(
+    req: JoinClassRequest,
+    auth: Optional[dict] = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    student_id = (auth.get("sub") if auth else None) or (req.student_id.strip().upper() if req.student_id and req.student_id.strip() else None)
+    if not student_id:
+        raise HTTPException(status_code=400, detail="Student identification required (Bearer token or student_id in body)")
+
+    code = req.class_code.strip().upper() if req.class_code and req.class_code.strip() else ""
+    if not code:
+        raise HTTPException(status_code=400, detail="Class code cannot be empty")
+
+    course = db.scalars(
+        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail=f"Invalid class code '{code}'. Class not found.")
+
+    student = db.get(Student, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student ID '{student_id}' not found in registry")
+
+    # If student previously had an enrolled class, ensure it is recorded in Enrollment
+    import uuid
+    if student.class_id and student.class_id != course.class_id:
+        prior_enr = db.scalars(
+            select(Enrollment).where(
+                Enrollment.student_id == student_id,
+                Enrollment.class_id == student.class_id
+            )
+        ).first()
+        if not prior_enr:
+            db.add(Enrollment(
+                enrollment_id=f"enr_{uuid.uuid4().hex[:12]}",
+                student_id=student_id,
+                class_id=student.class_id
+            ))
+
+    # Add enrollment record for target course if not exists
+    existing_enr = db.scalars(
+        select(Enrollment).where(Enrollment.student_id == student_id, Enrollment.class_id == course.class_id)
+    ).first()
+    if not existing_enr:
+        db.add(Enrollment(
+            enrollment_id=f"enr_{uuid.uuid4().hex[:12]}",
+            student_id=student_id,
+            class_id=course.class_id
+        ))
+
+    student.class_id = course.class_id
+    db.commit()
+
+    return {
+        "success": True,
+        "student_id": student_id,
+        "class_id": course.class_id,
+        "class_name": course.class_name,
+        "subject": course.subject,
+        "class_code": course.class_code or course.class_id,
+        "message": f"Successfully joined {course.class_name} ({course.subject})"
+    }
+
+
+@app.post("/api/v2/classes/join")
+def join_class_v2(
+    req: JoinClassRequest,
+    user: dict = Depends(require_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    if user.get("role") == "student":
+        student_id = user["sub"]
+    elif req.student_id and req.student_id.strip():
+        student_id = req.student_id.strip().upper()
+    else:
+        student_id = user["sub"]
+
+    code = req.class_code.strip().upper() if req.class_code and req.class_code.strip() else ""
+    if not code:
+        raise HTTPException(status_code=400, detail="Class code cannot be empty")
+
+    course = db.scalars(
+        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail=f"Invalid class code '{code}'. Class not found.")
+
+    student = db.get(Student, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student ID '{student_id}' not found in registry")
+
+    import uuid
+    if student.class_id and student.class_id != course.class_id:
+        prior_enr = db.scalars(
+            select(Enrollment).where(
+                Enrollment.student_id == student_id,
+                Enrollment.class_id == student.class_id
+            )
+        ).first()
+        if not prior_enr:
+            db.add(Enrollment(
+                enrollment_id=f"enr_{uuid.uuid4().hex[:12]}",
+                student_id=student_id,
+                class_id=student.class_id
+            ))
+
+    existing_enr = db.scalars(
+        select(Enrollment).where(Enrollment.student_id == student_id, Enrollment.class_id == course.class_id)
+    ).first()
+    if not existing_enr:
+        db.add(Enrollment(
+            enrollment_id=f"enr_{uuid.uuid4().hex[:12]}",
+            student_id=student_id,
+            class_id=course.class_id
+        ))
+
+    student.class_id = course.class_id
+    db.commit()
+
+    return {
+        "success": True,
+        "student_id": student_id,
+        "class_id": course.class_id,
+        "class_name": course.class_name,
+        "subject": course.subject,
+        "class_code": course.class_code or course.class_id,
+        "message": f"Successfully joined {course.class_name} ({course.subject})"
+    }
+
+
 @app.get("/api/classes/{class_id}/roster")
 def get_class_roster(class_id: str, db: Session = Depends(get_db)):
-    rows = db.scalars(select(Student).where(Student.class_id == class_id)).all()
+    cid = class_id.strip().upper()
+    enrolled_sids = db.scalars(
+        select(Enrollment.student_id).where(Enrollment.class_id == cid)
+    ).all()
+    rows = db.scalars(
+        select(Student).where(
+            (Student.class_id == cid) | (Student.student_id.in_(enrolled_sids))
+        ).distinct()
+    ).all()
     return [
         {
             "student_id": s.student_id,
             "name": s.name,
             "email": s.email,
             "registered_device_id": s.registered_device_id,
-            "class_id": s.class_id,
+            "class_id": cid,
         }
         for s in rows
     ]
+
+
+@app.get("/api/students/{student_id}/classes")
+def get_student_classes(
+    student_id: str,
+    auth: Optional[dict] = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    sid = student_id.strip().upper()
+    student = db.get(Student, sid)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student '{sid}' not found in registry")
+
+    enrolled_cids = set(db.scalars(
+        select(Enrollment.class_id).where(Enrollment.student_id == sid)
+    ).all())
+    if student.class_id:
+        enrolled_cids.add(student.class_id)
+
+    classes = db.scalars(
+        select(CourseClass).where(CourseClass.class_id.in_(enrolled_cids))
+    ).all()
+    return [
+        {
+            "class_id": c.class_id,
+            "class_name": c.class_name,
+            "subject": c.subject,
+            "teacher_id": c.teacher_id,
+            "class_code": c.class_code or c.class_id,
+        }
+        for c in classes
+    ]
+
+
+@app.get("/api/v2/students/me/classes")
+def get_my_classes_v2(
+    user: dict = Depends(require_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    sid = user["sub"]
+    student = db.get(Student, sid)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student '{sid}' not found in registry")
+
+    enrolled_cids = set(db.scalars(
+        select(Enrollment.class_id).where(Enrollment.student_id == sid)
+    ).all())
+    if student.class_id:
+        enrolled_cids.add(student.class_id)
+
+    classes = db.scalars(
+        select(CourseClass).where(CourseClass.class_id.in_(enrolled_cids))
+    ).all()
+    return [
+        {
+            "class_id": c.class_id,
+            "class_name": c.class_name,
+            "subject": c.subject,
+            "teacher_id": c.teacher_id,
+            "class_code": c.class_code or c.class_id,
+        }
+        for c in classes
+    ]
+
 
 

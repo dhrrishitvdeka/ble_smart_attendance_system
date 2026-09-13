@@ -23,6 +23,7 @@ class CourseClass(Base):
     class_name: Mapped[str] = mapped_column(String(128))
     subject: Mapped[str] = mapped_column(String(128))
     teacher_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("teachers.teacher_id"), nullable=True)
+    class_code: Mapped[str | None] = mapped_column(String(32), unique=True, index=True, nullable=True)
 
 
 class Student(Base):

@@ -366,7 +366,7 @@ public class GattAttendanceServer : IDisposable
             return false;
         }
 
-        if (student.ClassId != _currentSession.ClassId)
+        if (!_db.IsStudentEnrolledInClass(studentId, _currentSession.ClassId))
         {
             _activeChallenges.TryRemove(studentId, out _);
             FailStudent(studentId, "Student not enrolled in this session's class.");

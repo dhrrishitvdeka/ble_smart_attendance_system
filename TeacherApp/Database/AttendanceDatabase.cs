@@ -8,7 +8,7 @@ using Microsoft.Data.Sqlite;
 namespace TeacherApp.Database;
 
 public record TeacherRecord(string TeacherId, string Name, string Email, string PasswordHash);
-public record ClassRecord(string ClassId, string ClassName, string Subject, string TeacherId);
+public record ClassRecord(string ClassId, string ClassName, string Subject, string TeacherId, string ClassCode = "");
 public record StudentRecord(string StudentId, string Name, string Email, string RegisteredDeviceId, string DeviceSecret, string ClassId);
 public record SessionRecord(string SessionId, string ClassId, string TeacherId, string Subject, long StartTime, long ExpirationTime, string RandomNonce, string Status);
 public record AttendanceRecord(string AttendanceId, string SessionId, string StudentId, long Timestamp, string VerificationStatus, string RouteType, int? RssiEvidence, int HopCount, string? ViaStudent, bool Synced);
@@ -45,6 +45,7 @@ public class AttendanceDatabase : IDisposable
                 class_name TEXT NOT NULL,
                 subject TEXT NOT NULL,
                 teacher_id TEXT,
+                class_code TEXT,
                 FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id)
             );
 
@@ -55,6 +56,15 @@ public class AttendanceDatabase : IDisposable
                 registered_device_id TEXT NOT NULL,
                 device_secret TEXT NOT NULL,
                 class_id TEXT,
+                FOREIGN KEY (class_id) REFERENCES classes(class_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS enrollments (
+                enrollment_id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL,
+                class_id TEXT NOT NULL,
+                UNIQUE(student_id, class_id),
+                FOREIGN KEY (student_id) REFERENCES students(student_id),
                 FOREIGN KEY (class_id) REFERENCES classes(class_id)
             );
 
@@ -111,6 +121,34 @@ public class AttendanceDatabase : IDisposable
             alterCmd.ExecuteNonQuery();
         }
         catch { /* column already exists */ }
+
+        try
+        {
+            using var alterClassCmd = _connection.CreateCommand();
+            alterClassCmd.CommandText = "ALTER TABLE classes ADD COLUMN class_code TEXT;";
+            alterClassCmd.ExecuteNonQuery();
+        }
+        catch { /* column already exists */ }
+
+        try
+        {
+            using var updateClassCmd = _connection.CreateCommand();
+            updateClassCmd.CommandText = "UPDATE classes SET class_code = class_id WHERE class_code IS NULL OR class_code = '';";
+            updateClassCmd.ExecuteNonQuery();
+        }
+        catch { }
+
+        try
+        {
+            using var syncEnrCmd = _connection.CreateCommand();
+            syncEnrCmd.CommandText = @"
+                INSERT OR IGNORE INTO enrollments (enrollment_id, student_id, class_id)
+                SELECT 'enr_' || student_id || '_' || class_id, student_id, class_id
+                FROM students WHERE class_id IS NOT NULL AND class_id != '';
+            ";
+            syncEnrCmd.ExecuteNonQuery();
+        }
+        catch { }
     }
 
 
@@ -131,8 +169,8 @@ public class AttendanceDatabase : IDisposable
                 cmd.CommandText = @"
                     INSERT INTO teachers (teacher_id, name, email, password_hash)
                     VALUES ('T001', 'Dr. Sharma', 'sharma@college.edu', 'teach123');
-                    INSERT INTO classes (class_id, class_name, subject, teacher_id)
-                    VALUES ('CSE-A', 'CSE-A', 'Data Structures', 'T001');
+                    INSERT INTO classes (class_id, class_name, subject, teacher_id, class_code)
+                    VALUES ('CSE-A', 'CSE-A', 'Data Structures', 'T001', 'CSE-A');
                 ";
                 cmd.ExecuteNonQuery();
             }
@@ -148,8 +186,11 @@ public class AttendanceDatabase : IDisposable
                 cmd.CommandText = @"
                     INSERT INTO students (student_id, name, email, registered_device_id, device_secret, class_id)
                     VALUES (@sid, @name, @email, @dev, @secret, 'CSE-A');
+                    INSERT OR IGNORE INTO enrollments (enrollment_id, student_id, class_id)
+                    VALUES (@eid, @sid, 'CSE-A');
                 ";
                 cmd.Parameters.AddWithValue("@sid", sid);
+                cmd.Parameters.AddWithValue("@eid", $"enr_{sid}_CSE-A");
                 cmd.Parameters.AddWithValue("@name", names[i]);
                 cmd.Parameters.AddWithValue("@email", $"{sid.ToLower()}@student.college.edu");
                 cmd.Parameters.AddWithValue("@dev", $"DEV-{sid}");
@@ -168,9 +209,11 @@ public class AttendanceDatabase : IDisposable
 
     public TeacherRecord? AuthenticateTeacher(string teacherId, string password)
     {
+        if (string.IsNullOrWhiteSpace(teacherId) || string.IsNullOrWhiteSpace(password)) return null;
+
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = "SELECT teacher_id, name, email, password_hash FROM teachers WHERE teacher_id = @tid;";
-        cmd.Parameters.AddWithValue("@tid", teacherId.ToUpper());
+        cmd.Parameters.AddWithValue("@tid", teacherId);
         using var reader = cmd.ExecuteReader();
         if (reader.Read())
         {
@@ -187,22 +230,135 @@ public class AttendanceDatabase : IDisposable
     {
         var list = new List<ClassRecord>();
         using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT class_id, class_name, subject, teacher_id FROM classes WHERE teacher_id = @tid;";
+        cmd.CommandText = "SELECT class_id, class_name, subject, teacher_id, COALESCE(class_code, class_id) FROM classes WHERE teacher_id = @tid;";
         cmd.Parameters.AddWithValue("@tid", teacherId);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            list.Add(new ClassRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+            list.Add(new ClassRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4)));
         }
         return list;
+    }
+
+    public ClassRecord? GetClassByCode(string classCode)
+    {
+        if (string.IsNullOrWhiteSpace(classCode)) return null;
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT class_id, class_name, subject, teacher_id, COALESCE(class_code, class_id) FROM classes WHERE UPPER(TRIM(class_code)) = @code OR UPPER(TRIM(class_id)) = @code;";
+        cmd.Parameters.AddWithValue("@code", classCode.Trim().ToUpperInvariant());
+        using var reader = cmd.ExecuteReader();
+        if (reader.Read())
+        {
+            return new ClassRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4));
+        }
+        return null;
+    }
+
+    public bool JoinClassWithCode(string studentId, string classCode)
+    {
+        if (string.IsNullOrWhiteSpace(studentId) || string.IsNullOrWhiteSpace(classCode)) return false;
+        var cls = GetClassByCode(classCode);
+        if (cls == null) return false;
+
+        var student = GetStudent(studentId);
+        if (student == null) return false;
+
+        // Preserve previous class enrollment before updating primary active class
+        if (!string.IsNullOrWhiteSpace(student.ClassId))
+        {
+            try
+            {
+                using var prevCmd = _connection.CreateCommand();
+                prevCmd.CommandText = @"
+                    INSERT OR IGNORE INTO enrollments (enrollment_id, student_id, class_id)
+                    VALUES (@eid, @sid, @cid);
+                ";
+                prevCmd.Parameters.AddWithValue("@eid", $"enr_{student.StudentId}_{student.ClassId}");
+                prevCmd.Parameters.AddWithValue("@sid", student.StudentId);
+                prevCmd.Parameters.AddWithValue("@cid", student.ClassId);
+                prevCmd.ExecuteNonQuery();
+            }
+            catch { }
+        }
+
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            INSERT OR IGNORE INTO enrollments (enrollment_id, student_id, class_id)
+            VALUES (@eid, @sid, @cid);
+            UPDATE students SET class_id = @cid WHERE UPPER(student_id) = @sid;
+        ";
+        cmd.Parameters.AddWithValue("@eid", $"enr_{student.StudentId}_{cls.ClassId}");
+        cmd.Parameters.AddWithValue("@sid", student.StudentId);
+        cmd.Parameters.AddWithValue("@cid", cls.ClassId);
+        int affected = cmd.ExecuteNonQuery();
+
+        if (affected > 0)
+        {
+            LogAudit("STUDENT_JOIN_CLASS", $"{studentId} joined {cls.ClassId} via code {classCode}");
+            return true;
+        }
+        return false;
+    }
+
+    public bool AddClass(string classId, string className, string subject, string teacherId, string? classCode = null)
+    {
+        if (string.IsNullOrWhiteSpace(classId) || string.IsNullOrWhiteSpace(subject)) return false;
+        var cleanCid = classId.Trim().ToUpperInvariant();
+        var cleanCode = (string.IsNullOrWhiteSpace(classCode) ? cleanCid : classCode).Trim().ToUpperInvariant();
+
+        // Enforce uniqueness of class_id and class_code
+        if (GetClassByCode(cleanCode) != null || GetClassByCode(cleanCid) != null)
+            return false;
+
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO classes (class_id, class_name, subject, teacher_id, class_code)
+                VALUES (@cid, @name, @subj, @tid, @code);
+            ";
+            cmd.Parameters.AddWithValue("@cid", cleanCid);
+            cmd.Parameters.AddWithValue("@name", className.Trim());
+            cmd.Parameters.AddWithValue("@subj", subject.Trim());
+            cmd.Parameters.AddWithValue("@tid", teacherId.Trim().ToUpperInvariant());
+            cmd.Parameters.AddWithValue("@code", cleanCode);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public bool IsStudentEnrolledInClass(string studentId, string classId)
+    {
+        if (string.IsNullOrWhiteSpace(studentId) || string.IsNullOrWhiteSpace(classId)) return false;
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT 1 FROM students s
+            LEFT JOIN enrollments e ON UPPER(s.student_id) = UPPER(e.student_id)
+            WHERE UPPER(s.student_id) = @sid AND (UPPER(s.class_id) = @cid OR UPPER(e.class_id) = @cid)
+            LIMIT 1;
+        ";
+        cmd.Parameters.AddWithValue("@sid", studentId.Trim().ToUpperInvariant());
+        cmd.Parameters.AddWithValue("@cid", classId.Trim().ToUpperInvariant());
+        var res = cmd.ExecuteScalar();
+        return res != null;
     }
 
     public List<StudentRecord> GetClassStudents(string classId)
     {
         var list = new List<StudentRecord>();
+        var cleanCid = classId.Trim().ToUpperInvariant();
         using var cmd = _connection.CreateCommand();
-        cmd.CommandText = "SELECT student_id, name, email, registered_device_id, device_secret, class_id FROM students WHERE class_id = @cid;";
-        cmd.Parameters.AddWithValue("@cid", classId);
+        cmd.CommandText = @"
+            SELECT DISTINCT s.student_id, s.name, s.email, s.registered_device_id, s.device_secret, @cid
+            FROM students s
+            LEFT JOIN enrollments e ON UPPER(s.student_id) = UPPER(e.student_id)
+            WHERE UPPER(s.class_id) = @cid OR UPPER(e.class_id) = @cid
+            ORDER BY s.student_id ASC;
+        ";
+        cmd.Parameters.AddWithValue("@cid", cleanCid);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
