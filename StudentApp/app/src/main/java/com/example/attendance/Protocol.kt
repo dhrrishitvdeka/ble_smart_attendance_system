@@ -48,7 +48,7 @@ object Protocol {
         val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
         if (buf.get() != MAGIC) return null
         val hop = buf.get().toInt() and 0xFF
-        if (hop !in 1..MAX_HOPS) return null
+        if (hop !in 0..MAX_HOPS) return null
         val session = buf.int
         return DecodedBeacon(sessionIdInt = session, hopCount = hop)
     }

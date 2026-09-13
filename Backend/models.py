@@ -79,3 +79,16 @@ class AuditLog(Base):
     operator_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     details: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
+
+class RelayEvent(Base):
+    __tablename__ = "relay_events"
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_student_id: Mapped[str] = mapped_column(String(32), index=True)
+    relay_student_id: Mapped[str] = mapped_column(String(32), index=True)
+    hop_count: Mapped[int] = mapped_column(Integer, default=1)
+    timestamp: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(32))
+
+

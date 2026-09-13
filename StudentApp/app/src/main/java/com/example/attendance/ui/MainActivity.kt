@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener, RelayManager.R
                 hopCount = 2,
                 viaStudent = "S002"
             )
-            relayManager.submitMeshRelayAttendance(student, session)
+            relayManager.submitMeshRelayAttendance(student, session, targetPeripheral)
         }
     }
 
@@ -213,8 +213,9 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener, RelayManager.R
         updateHistoryVisibility()
 
         // As an eligible node, activate mesh relay advertising to help peer classmates (spec §13)
+        val sessionInt = record.sessionId.toLongOrNull(16)?.toInt() ?: record.sessionId.hashCode()
         relayManager.startRelayBeaconAdvertising(
-            sessionIdInt = record.sessionId.hashCode(),
+            sessionIdInt = sessionInt,
             remainingHops = 1
         )
     }

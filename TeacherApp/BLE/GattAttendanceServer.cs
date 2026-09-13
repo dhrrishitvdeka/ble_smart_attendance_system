@@ -24,10 +24,14 @@ public class GattAttendanceServer : IDisposable
     private GattLocalCharacteristic? _relayChar;
 
     private readonly ConcurrentDictionary<string, (string ChallengeNonce, long ExpiresAt)> _activeChallenges = new();
+    private readonly ConcurrentDictionary<string, string> _deviceToStudent = new();
+    private readonly ConcurrentDictionary<string, string> _studentResults = new();
     private readonly HashSet<string> _seenRequestIds = new();
     private string? _lastChallengeNonce;
+    private string? _lastResultStatus;
 
     public event Action<string, string, string>? OnStudentVerified;
+
     public event Action<string, string>? OnVerificationFailed;
 
     public bool IsAdvertising { get; private set; }
@@ -139,7 +143,9 @@ public class GattAttendanceServer : IDisposable
             if (resResult.Error == BluetoothError.Success)
             {
                 _resultChar = resResult.Characteristic;
+                _resultChar.ReadRequested += OnResultReadRequested;
             }
+
 
             // 6. Relay Characteristic (Write)
             var relayParams = new GattLocalCharacteristicParameters
@@ -210,10 +216,44 @@ public class GattAttendanceServer : IDisposable
         using var deferral = args.GetDeferral();
         var request = await args.GetRequestAsync();
 
-        // Return the active challenge nonce generated for the requesting client
-        var nonce = _lastChallengeNonce ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+        string nonce = _lastChallengeNonce ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+        if (args.Session?.DeviceId != null &&
+            _deviceToStudent.TryGetValue(args.Session.DeviceId.Id, out var sid) &&
+            _activeChallenges.TryGetValue(sid, out var ch))
+        {
+            nonce = ch.ChallengeNonce;
+        }
+
         using var writer = new DataWriter();
         writer.WriteString(nonce);
+        request.RespondWithValue(writer.DetachBuffer());
+    }
+
+    private async void OnResultReadRequested(GattLocalCharacteristic sender, GattReadRequestedEventArgs args)
+    {
+        using var deferral = args.GetDeferral();
+        var request = await args.GetRequestAsync();
+
+        string status = _lastResultStatus ?? "NOT_VERIFIED:0x00";
+        if (args.Session?.DeviceId != null &&
+            _deviceToStudent.TryGetValue(args.Session.DeviceId.Id, out var sid))
+        {
+            if (_studentResults.TryGetValue(sid, out var studentSpecificStatus))
+            {
+                status = studentSpecificStatus;
+            }
+            else if (_currentSession != null)
+            {
+                var att = _db.GetSessionAttendance(_currentSession.SessionId).FirstOrDefault(a => a.StudentId == sid);
+                if (att != null)
+                {
+                    status = $"{att.VerificationStatus}:{(att.VerificationStatus == "PRESENT" || att.VerificationStatus == "ELIGIBLE" ? "0x01" : "0x02")}";
+                }
+            }
+        }
+
+        using var writer = new DataWriter();
+        writer.WriteString(status);
         request.RespondWithValue(writer.DetachBuffer());
     }
 
@@ -233,6 +273,10 @@ public class GattAttendanceServer : IDisposable
             var challengeNonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
             _activeChallenges[studentId] = (challengeNonce, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 30000);
             _lastChallengeNonce = challengeNonce;
+            if (args.Session?.DeviceId != null)
+            {
+                _deviceToStudent[args.Session.DeviceId.Id] = studentId;
+            }
         }
 
         if (request.Option == GattWriteOption.WriteWithResponse)
@@ -257,6 +301,11 @@ public class GattAttendanceServer : IDisposable
             var responseHash = parts[2].Trim().ToLower();
             int rssi = -65;
             if (parts.Length >= 4) int.TryParse(parts[3], out rssi);
+
+            if (args.Session?.DeviceId != null)
+            {
+                _deviceToStudent[args.Session.DeviceId.Id] = studentId;
+            }
 
             VerifyAndCommit(studentId, deviceId, responseHash, "DIRECT", rssi, 0, null);
         }
@@ -286,6 +335,13 @@ public class GattAttendanceServer : IDisposable
             int rssi = -75;
             if (parts.Length >= 7) int.TryParse(parts[6], out rssi);
 
+            if (args.Session?.DeviceId != null)
+            {
+                _deviceToStudent[args.Session.DeviceId.Id] = studentId;
+            }
+
+            _db.RecordRelayEvent($"rl_{Guid.NewGuid():N}", _currentSession.SessionId, $"msg_{Guid.NewGuid():N}", studentId, viaStudent, hopCount, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), "FORWARDED");
+
             VerifyAndCommit(studentId, deviceId, responseHash, "RELAY", rssi, hopCount, viaStudent);
         }
 
@@ -299,52 +355,65 @@ public class GattAttendanceServer : IDisposable
     {
         if (_currentSession == null || _currentSession.Status != "ACTIVE")
         {
-            OnVerificationFailed?.Invoke(studentId, "Session not active.");
+            FailStudent(studentId, "Session not active.");
             return false;
         }
 
         var student = _db.GetStudent(studentId);
         if (student == null)
         {
-            OnVerificationFailed?.Invoke(studentId, "Student not found in roster.");
+            FailStudent(studentId, "Student not found in roster.");
             return false;
         }
 
         if (student.ClassId != _currentSession.ClassId)
         {
-            OnVerificationFailed?.Invoke(studentId, "Student not enrolled in this session's class.");
+            _activeChallenges.TryRemove(studentId, out _);
+            FailStudent(studentId, "Student not enrolled in this session's class.");
             return false;
         }
 
         if (student.RegisteredDeviceId != deviceId)
         {
-            OnVerificationFailed?.Invoke(studentId, "Unregistered hardware device.");
+            _activeChallenges.TryRemove(studentId, out _);
+            FailStudent(studentId, "Unregistered hardware device.");
+            return false;
+        }
+
+        // Anti-duplicate check: if attendance already committed for this session, reject re-verification
+        var existingAtt = _db.GetSessionAttendance(_currentSession.SessionId).FirstOrDefault(a => a.StudentId == studentId);
+        if (existingAtt != null)
+        {
+            _activeChallenges.TryRemove(studentId, out _);
+            FailStudent(studentId, "Attendance already recorded for this session.");
             return false;
         }
 
         if (rssi <= -90)
         {
-            OnVerificationFailed?.Invoke(studentId, $"Proximity below floor threshold ({rssi} dBm).");
+            _activeChallenges.TryRemove(studentId, out _);
+            FailStudent(studentId, $"Proximity below floor threshold ({rssi} dBm).");
             return false;
         }
 
         if (routeType == "RELAY" && (hopCount < 1 || hopCount > BleProtocol.MaxHops))
         {
-            OnVerificationFailed?.Invoke(studentId, $"Hop limit exceeded ({hopCount} > {BleProtocol.MaxHops}).");
+            _activeChallenges.TryRemove(studentId, out _);
+            FailStudent(studentId, $"Hop limit exceeded ({hopCount} > {BleProtocol.MaxHops}).");
             return false;
         }
 
         // Cryptographic check: calculate SHA256(challenge + secret)
         if (!_activeChallenges.TryGetValue(studentId, out var ch))
         {
-            OnVerificationFailed?.Invoke(studentId, "No active challenge found for student. Fresh challenge required.");
+            FailStudent(studentId, "No active challenge found for student. Fresh challenge required.");
             return false;
         }
 
         if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > ch.ExpiresAt)
         {
             _activeChallenges.TryRemove(studentId, out _);
-            OnVerificationFailed?.Invoke(studentId, "Challenge expired.");
+            FailStudent(studentId, "Challenge expired.");
             return false;
         }
 
@@ -352,7 +421,7 @@ public class GattAttendanceServer : IDisposable
         if (!string.Equals(expected, responseHash, StringComparison.OrdinalIgnoreCase))
         {
             _activeChallenges.TryRemove(studentId, out _);
-            OnVerificationFailed?.Invoke(studentId, "Cryptographic response mismatch.");
+            FailStudent(studentId, "Cryptographic response mismatch.");
             return false;
         }
 
@@ -364,11 +433,41 @@ public class GattAttendanceServer : IDisposable
         bool ok = _db.RecordAttendance(attId, _currentSession.SessionId, studentId, "ELIGIBLE", routeType, rssi, hopCount, viaStudent);
         if (ok)
         {
+            _studentResults[studentId] = "ELIGIBLE:0x01";
+            _lastResultStatus = "ELIGIBLE:0x01";
+            NotifyResultSubscribers("ELIGIBLE:0x01");
             OnStudentVerified?.Invoke(studentId, routeType, $"{rssi} dBm");
             return true;
         }
         return false;
     }
+
+    private void FailStudent(string studentId, string reason)
+    {
+        _studentResults[studentId] = $"REJECTED:0x02:{reason}";
+        _lastResultStatus = $"REJECTED:0x02:{reason}";
+        _db.LogAudit("VERIFICATION_FAILED", $"Student {studentId} rejected: {reason}");
+        NotifyResultSubscribers($"REJECTED:0x02:{reason}");
+        OnVerificationFailed?.Invoke(studentId, reason);
+    }
+
+    public string? GetStudentResult(string studentId)
+    {
+        return _studentResults.TryGetValue(studentId.Trim().ToUpper(), out var res) ? res : null;
+    }
+
+    private async void NotifyResultSubscribers(string resultPayload)
+    {
+        if (_resultChar == null) return;
+        try
+        {
+            using var writer = new DataWriter();
+            writer.WriteString(resultPayload);
+            await _resultChar.NotifyValueAsync(writer.DetachBuffer());
+        }
+        catch { }
+    }
+
 
     public void RegisterChallengeForTest(string studentId, string nonce, int ttlMs = 30000)
     {

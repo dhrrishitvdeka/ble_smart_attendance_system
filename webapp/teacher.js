@@ -4,6 +4,7 @@
    ============================================================ */
 
 let currentTeacher = null;
+let teacherSessionPassword = null;
 let expiryTimer = null;
 
 /* Re-read the shared DB (student tabs write to it concurrently) and
@@ -62,7 +63,11 @@ async function teacherLogin() {
   }
   msg.textContent = ""; msg.className = "msg";
   currentTeacher = t;
+  teacherSessionPassword = val("t-pass") || "teach123";
+  delete t.password;
+  (DB.teachers || []).forEach(x => { delete x.password; });
   el("t-name").textContent = t.name;
+
   // Capability detection (spec §2: never assume peripheral-mode support)
   const supported = true; // simulated laptop supports GATT server mode
   el("ble-support").textContent = supported ? "\u2714 BLE GATT peripheral supported" : "\u2718 Not supported";
@@ -100,6 +105,7 @@ function teacherLogout() {
   if (activeSession && currentTeacher && activeSession.teacher_id === currentTeacher.teacher_id) endSession();
   clearExpiryTimer();
   currentTeacher = null;
+  teacherSessionPassword = null;
   showScreen("screen-role");
 }
 
@@ -462,7 +468,7 @@ async function syncToCloud() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             username: currentTeacher.teacher_id,
-            password: val("t-pass") || "teach123"
+            password: teacherSessionPassword || val("t-pass") || "teach123"
           })
         });
         if (loginResp.ok) {
@@ -500,8 +506,35 @@ async function syncToCloud() {
       unsynced.forEach(a => { a.synced = true; });
       log.textContent += `[sync] Cloud synced: stored=${data.stored}, duplicates_ignored=${data.duplicates_ignored} ✓\n`;
       audit("CLOUD_SYNC", `${data.stored} records pushed over HTTPS`);
+
+      // Also sync pending relay events if any
+      const unsyncedRelay = (DB.relay_events || []).filter(r => !r.synced);
+      if (unsyncedRelay.length > 0) {
+        try {
+          const rResp = await fetch("http://localhost:8000/api/relay-events/batch", {
+            method: "POST",
+            headers,
+            body: JSON.stringify(unsyncedRelay.map(r => ({
+              event_id: r.event_id,
+              session_id: r.session_id,
+              message_id: r.message_id || ("msg_" + r.event_id),
+              source_student_id: r.source_student_id,
+              relay_student_id: r.relay_student_id,
+              hop_count: r.hop_count || 1,
+              timestamp: r.timestamp || now(),
+              status: r.status || "FORWARDED"
+            })))
+          });
+          if (rResp.ok) {
+            unsyncedRelay.forEach(r => { r.synced = true; });
+            log.textContent += `[sync] Synced ${unsyncedRelay.length} mesh relay event(s) to cloud.\n`;
+          }
+        } catch (_) { }
+      }
+
       saveDB();
     } else {
+
       // If server returned non-200, mark as retained
       log.textContent += `[sync] Cloud rejected (status ${resp.status}) — queued for retry.\n`;
     }

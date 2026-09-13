@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.0.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\TeacherApp\BLE\*.cs" Link="BLE\%(FileName)%(Extension)" />
+    <Compile Include="..\TeacherApp\Database\*.cs" Link="Database\%(FileName)%(Extension)" />
+    <Compile Include="..\TeacherApp\Services\*.cs" Link="Services\%(FileName)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
+
+</Project>

@@ -174,7 +174,7 @@ async function tryRealBLE() {
         }, 3000);
       });
     } catch (_) { /* watchAdvertisements not permitted — RSSI stays simulated */ }
-    return { ok: true, rssi, name: device.name || "unnamed device" };
+    return { ok: true, server, device, rssi, name: device.name || "unnamed device" };
   } catch (err) {
     return { ok: false, error: err.name === "NotFoundError"
       ? "No device selected / no BLE devices found"
@@ -271,26 +271,57 @@ async function runVerification(routeType, relayInfo, realBle) {
   let d = step("Requesting single-use challenge from Teacher GATT Authority");
   await sleep(600);
 
+  let challengeStr = null;
+  let gattService = null;
+  let useRealGatt = false;
+
+  if (realBle && realBle.ok && realBle.server) {
+    try {
+      gattService = await realBle.server.getPrimaryService(UUIDS.service);
+      useRealGatt = true;
+    } catch (e) {
+      console.warn("GATT primary service discovery fallback to local simulation:", e);
+    }
+  }
+
+  if (useRealGatt && gattService) {
+    try {
+      const reqChar = await gattService.getCharacteristic(UUIDS.request);
+      await reqChar.writeValueWithResponse(new TextEncoder().encode(`${currentStudent.student_id}|${authCtx.deviceId}|${routeType}`));
+
+      const chChar = await gattService.getCharacteristic(UUIDS.challenge);
+      const chVal = await chChar.readValue();
+      challengeStr = new TextDecoder().decode(chVal).trim();
+      done(d, true, challengeStr.slice(0, 10) + "… (issued via Real Web Bluetooth GATT)");
+    } catch (gattErr) {
+      console.warn("Real GATT challenge request error, using simulation:", gattErr);
+      useRealGatt = false;
+    }
+  }
+
   reloadDB();
   const session = getActiveSession();
-  if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
-    done(d, false, "session not active"); return failResult("Session expired or ended. NOT VERIFIED.");
-  }
-  if (DB.seen_request_ids.length > 500) DB.seen_request_ids = DB.seen_request_ids.slice(-200);
-  DB.seen_request_ids.push(requestId); saveDB();
+  if (!useRealGatt) {
+    if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
+      done(d, false, "session not active"); return failResult("Session expired or ended. NOT VERIFIED.");
+    }
+    if (DB.seen_request_ids.length > 500) DB.seen_request_ids = DB.seen_request_ids.slice(-200);
+    DB.seen_request_ids.push(requestId); saveDB();
 
-  const challengeRes = teacherHandleChallengeRequest(session.session_id, currentStudent.student_id, authCtx.deviceId);
-  if (!challengeRes.ok) {
-    done(d, false, challengeRes.reason);
-    return failResult(challengeRes.reason);
+    const challengeRes = teacherHandleChallengeRequest(session.session_id, currentStudent.student_id, authCtx.deviceId);
+    if (!challengeRes.ok) {
+      done(d, false, challengeRes.reason);
+      return failResult(challengeRes.reason);
+    }
+    challengeStr = challengeRes.challenge;
+    done(d, true, challengeStr.slice(0, 10) + "… (issued by Teacher root)");
   }
-  done(d, true, challengeRes.challenge.slice(0, 10) + "… (issued by Teacher root)");
 
   /* 2. Compute hardware-bound response */
   d = step("Computing hardware-bound device signature: SHA-256(challenge || secret)");
   await sleep(700);
   const secret = authCtx.deviceSecret || (DB.student_secrets && DB.student_secrets[currentStudent.student_id]) || "";
-  const response = await sha256hex(challengeRes.challenge + secret);
+  const response = await sha256hex(challengeStr + secret);
   done(d, true);
 
   /* 3. Capture radio proximity evidence */
@@ -323,14 +354,46 @@ async function runVerification(routeType, relayInfo, realBle) {
   d = step("Submitting proof & proximity to Teacher Authority for verification");
   await sleep(800);
 
+  if (useRealGatt && gattService) {
+    try {
+      if (routeType === "RELAY") {
+        const relayChar = await gattService.getCharacteristic(UUIDS.relay);
+        const payload = `RELAY|${currentStudent.student_id}|${authCtx.deviceId}|${response}|${relayInfo.hopCount}|${relayInfo.viaStudent}|${rssi}`;
+        await relayChar.writeValueWithResponse(new TextEncoder().encode(payload));
+      } else {
+        const respChar = await gattService.getCharacteristic(UUIDS.response);
+        const payload = `${currentStudent.student_id}|${authCtx.deviceId}|${response}|${rssi}`;
+        await respChar.writeValueWithResponse(new TextEncoder().encode(payload));
+      }
+
+      const resChar = await gattService.getCharacteristic(UUIDS.result);
+      const resVal = await resChar.readValue();
+      const resText = new TextDecoder().decode(resVal).trim();
+      if (resText.startsWith("ELIGIBLE") || resText.startsWith("PRESENT")) {
+        done(d, true, "Teacher GATT Authority verified challenge over BLE & recorded ELIGIBLE");
+        return successResult(rssi, routeType, relayInfo ? relayInfo.viaStudent : null, relayInfo ? relayInfo.hopCount : 0);
+      } else {
+        const errReason = resText.split(":")[2] || resText;
+        done(d, false, errReason);
+        return failResult("Teacher Authority rejected verification: " + errReason);
+      }
+    } catch (e) {
+      console.warn("Real GATT response transmission fallback to local store:", e);
+    }
+  }
+
   if (routeType === "RELAY") {
     reloadDB();
     DB.relay_events.push({
-      event_id: uid("rl"), message_id: uid("msg"), session_id: session.session_id,
+      event_id: uid("rl"), message_id: uid("msg"), session_id: session ? session.session_id : "SES_ACTIVE",
       source_student_id: currentStudent.student_id, relay_student_id: relayInfo.viaStudent,
       hop_count: relayInfo.hopCount, timestamp: now(), status: "FORWARDED"
     });
     saveDB();
+  }
+
+  if (!session) {
+    return failResult("Session expired or inactive. NOT VERIFIED.");
   }
 
   const verifyRes = await teacherVerifyAttendanceSubmission(

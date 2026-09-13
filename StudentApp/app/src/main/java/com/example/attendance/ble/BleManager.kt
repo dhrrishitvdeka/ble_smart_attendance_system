@@ -120,7 +120,7 @@ class BleManager(
             val mfgData = record?.getManufacturerSpecificData(Protocol.COMPANY_ID)
             val decoded = Protocol.decodeMfgData(mfgData)
             val sessionIdStr = if (decoded != null) {
-                Integer.toHexString(decoded.sessionIdInt).uppercase()
+                "%08X".format(decoded.sessionIdInt)
             } else {
                 "ACTIVE_SES"
             }
@@ -214,6 +214,9 @@ class BleManager(
                     listener.onLog("[BLE] Session Data read: $raw")
                     val parts = raw.split(":")
                     val sessionId = parts.getOrNull(0) ?: "UNKNOWN"
+                    val nonce = parts.getOrNull(1) ?: ""
+                    currentSession = currentSession?.copy(sessionId = sessionId, nonce = nonce)
+                        ?: AttendanceSession(sessionId, nonce, "CSE-A", -65, 0, null)
 
                     // Submit attendance request to teacher
                     listener.onStatusChanged(AttendanceState.CHALLENGING, "Sending attendance request to teacher...")
@@ -249,7 +252,15 @@ class BleManager(
 
                 Protocol.RESULT_CHAR_UUID -> {
                     listener.onLog("[BLE] Result confirmation read: $raw")
-                    completeAttendance(student, "DIRECT", currentSession?.rssi ?: -65, 0, null)
+                    val parts = raw.split(":")
+                    val status = parts.getOrNull(0) ?: "UNKNOWN"
+                    if (status == "ELIGIBLE" || status == "PRESENT") {
+                        completeAttendance(student, "DIRECT", currentSession?.rssi ?: -65, 0, null)
+                    } else {
+                        val reason = if (parts.size >= 3) parts[2] else (parts.getOrNull(1) ?: "Verification rejected by Teacher")
+                        listener.onStatusChanged(AttendanceState.NOT_VERIFIED, "Rejected: $reason")
+                        listener.onVerificationFailed("Teacher authority rejected verification: $reason")
+                    }
                 }
             }
         }
@@ -277,8 +288,13 @@ class BleManager(
                 }
 
                 Protocol.RESPONSE_CHAR_UUID -> {
-                    listener.onLog("[BLE] Response written successfully. Verification acknowledged by Teacher!")
-                    completeAttendance(student, "DIRECT", currentSession?.rssi ?: -65, 0, null)
+                    listener.onLog("[BLE] Response written successfully. Awaiting Teacher Authority validation...")
+                    val resultChar = service?.getCharacteristic(Protocol.RESULT_CHAR_UUID)
+                    if (resultChar != null) {
+                        gatt?.readCharacteristic(resultChar)
+                    } else {
+                        listener.onVerificationFailed("Result characteristic missing from Teacher GATT server.")
+                    }
                 }
             }
         }

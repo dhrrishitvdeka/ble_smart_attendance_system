@@ -12,6 +12,8 @@ public record ClassRecord(string ClassId, string ClassName, string Subject, stri
 public record StudentRecord(string StudentId, string Name, string Email, string RegisteredDeviceId, string DeviceSecret, string ClassId);
 public record SessionRecord(string SessionId, string ClassId, string TeacherId, string Subject, long StartTime, long ExpirationTime, string RandomNonce, string Status);
 public record AttendanceRecord(string AttendanceId, string SessionId, string StudentId, long Timestamp, string VerificationStatus, string RouteType, int? RssiEvidence, int HopCount, string? ViaStudent, bool Synced);
+public record RelayRecord(string EventId, string SessionId, string MessageId, string SourceStudentId, string RelayStudentId, int HopCount, long Timestamp, string Status);
+
 
 public class AttendanceDatabase : IDisposable
 {
@@ -87,9 +89,30 @@ public class AttendanceDatabase : IDisposable
                 event_type TEXT NOT NULL,
                 detail TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS relay_events (
+                event_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                source_student_id TEXT NOT NULL,
+                relay_student_id TEXT NOT NULL,
+                hop_count INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                synced INTEGER DEFAULT 0
+            );
         ";
         cmd.ExecuteNonQuery();
+
+        try
+        {
+            using var alterCmd = _connection.CreateCommand();
+            alterCmd.CommandText = "ALTER TABLE relay_events ADD COLUMN synced INTEGER DEFAULT 0;";
+            alterCmd.ExecuteNonQuery();
+        }
+        catch { /* column already exists */ }
     }
+
 
     private void SeedDefaultData()
     {
@@ -152,7 +175,7 @@ public class AttendanceDatabase : IDisposable
         if (reader.Read())
         {
             var hash = reader.GetString(3);
-            if (hash == password || password == "teach123")
+            if (hash == password)
             {
                 return new TeacherRecord(reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? "" : reader.GetString(2), hash);
             }
@@ -207,6 +230,26 @@ public class AttendanceDatabase : IDisposable
             );
         }
         return null;
+    }
+
+    public bool AddStudent(string studentId, string name, string email, string registeredDeviceId, string deviceSecret, string classId)
+    {
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO students (student_id, name, email, registered_device_id, device_secret, class_id)
+                VALUES (@sid, @name, @email, @dev, @sec, @cid);
+            ";
+            cmd.Parameters.AddWithValue("@sid", studentId);
+            cmd.Parameters.AddWithValue("@name", name);
+            cmd.Parameters.AddWithValue("@email", email);
+            cmd.Parameters.AddWithValue("@dev", registeredDeviceId);
+            cmd.Parameters.AddWithValue("@sec", deviceSecret);
+            cmd.Parameters.AddWithValue("@cid", classId);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        catch { return false; }
     }
 
     public SessionRecord CreateSession(string classId, string teacherId, string subject, long durationMs = 600000)
@@ -350,8 +393,84 @@ public class AttendanceDatabase : IDisposable
         catch { }
     }
 
+    public bool RecordRelayEvent(string eventId, string sessionId, string messageId, string sourceStudentId, string relayStudentId, int hopCount, long timestamp, string status)
+    {
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                INSERT OR IGNORE INTO relay_events (event_id, session_id, message_id, source_student_id, relay_student_id, hop_count, timestamp, status, synced)
+                VALUES (@eid, @sid, @mid, @src, @rl, @hops, @ts, @st, 0);
+            ";
+            cmd.Parameters.AddWithValue("@eid", eventId);
+            cmd.Parameters.AddWithValue("@sid", sessionId);
+            cmd.Parameters.AddWithValue("@mid", messageId);
+            cmd.Parameters.AddWithValue("@src", sourceStudentId);
+            cmd.Parameters.AddWithValue("@rl", relayStudentId);
+            cmd.Parameters.AddWithValue("@hops", hopCount);
+            cmd.Parameters.AddWithValue("@ts", timestamp);
+            cmd.Parameters.AddWithValue("@st", status);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        catch { return false; }
+    }
+
+    public List<RelayRecord> GetSessionRelayEvents(string sessionId)
+    {
+        var list = new List<RelayRecord>();
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT event_id, session_id, message_id, source_student_id, relay_student_id, hop_count, timestamp, status FROM relay_events WHERE session_id = @sid ORDER BY timestamp ASC;";
+        cmd.Parameters.AddWithValue("@sid", sessionId);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new RelayRecord(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetInt32(5),
+                reader.GetInt64(6),
+                reader.GetString(7)
+            ));
+        }
+        return list;
+    }
+
+    public List<RelayRecord> GetUnsyncedRelayEvents()
+    {
+        var list = new List<RelayRecord>();
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT event_id, session_id, message_id, source_student_id, relay_student_id, hop_count, timestamp, status FROM relay_events WHERE synced = 0 ORDER BY timestamp ASC;";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new RelayRecord(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetInt32(5),
+                reader.GetInt64(6),
+                reader.GetString(7)
+            ));
+        }
+        return list;
+    }
+
+    public void MarkRelayEventSynced(string eventId)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "UPDATE relay_events SET synced = 1 WHERE event_id = @id;";
+        cmd.Parameters.AddWithValue("@id", eventId);
+        cmd.ExecuteNonQuery();
+    }
+
     public void Dispose()
     {
         _connection?.Dispose();
     }
 }
+

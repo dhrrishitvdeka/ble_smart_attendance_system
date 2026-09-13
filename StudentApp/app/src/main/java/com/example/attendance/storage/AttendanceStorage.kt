@@ -19,21 +19,21 @@ class AttendanceStorage(context: Context) {
                 studentId = "S001",
                 name = "Aarav Kumar",
                 deviceSecret = "sec_aarav_001_secret_key_fixed_99887766554433221100aabbccddeeff",
-                registeredDeviceId = "DEV-001",
+                registeredDeviceId = "DEV-S001",
                 classId = "CSE-A"
             ),
             StudentProfile(
                 studentId = "S002",
                 name = "Diya Patel",
                 deviceSecret = "sec_diya_002_secret_key_fixed_11223344556677889900aabbccddeeff",
-                registeredDeviceId = "DEV-002",
+                registeredDeviceId = "DEV-S002",
                 classId = "CSE-A"
             ),
             StudentProfile(
                 studentId = "S003",
                 name = "Rohan Verma",
                 deviceSecret = "sec_rohan_003_secret_key_fixed_55667788990011223344aabbccddeeff",
-                registeredDeviceId = "DEV-003",
+                registeredDeviceId = "DEV-S003",
                 classId = "CSE-A"
             )
         )
