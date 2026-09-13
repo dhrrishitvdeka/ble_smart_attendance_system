@@ -97,9 +97,10 @@
   <section class="panel">
     <h3>Add Class (assigned to a teacher)</h3>
     <div class="row">
-      <label>Class ID<input id="ac-id" placeholder="CSE-B" style="max-width:180px" /></label>
-      <label>Subject<input id="ac-subject" placeholder="Subject" style="max-width:240px" /></label>
-      <label>Teacher<select id="ac-teacher" style="max-width:260px"></select></label>
+      <label>Class ID<input id="ac-id" placeholder="CSE-B" style="max-width:140px" /></label>
+      <label>Class Code (optional)<input id="ac-code" placeholder="e.g. CSE-B" style="max-width:140px" /></label>
+      <label>Subject<input id="ac-subject" placeholder="Subject" style="max-width:200px" /></label>
+      <label>Teacher<select id="ac-teacher" style="max-width:220px"></select></label>
       <button class="btn primary" onclick="addClass()">Add Class</button>
     </div>
     <div id="ac-msg" class="msg" role="status"></div>
@@ -185,6 +186,7 @@
     <h3>2 &mdash; Active Session</h3>
     <div class="session-grid">
       <div><span class="k">Class</span><span id="s-class"></span></div>
+      <div><span class="k">Class Code</span><span id="s-code" class="mono highlight"></span></div>
       <div><span class="k">Subject</span><span id="s-subject"></span></div>
       <div><span class="k">Session ID</span><span id="s-id" class="mono highlight"></span></div>
       <div><span class="k">Status</span><span id="s-status"></span></div>
@@ -258,6 +260,16 @@
           </select>
         </label>
       </div>
+    </div>
+    <div class="panel" style="margin-top:10px">
+      <label style="margin:0;display:block">
+        <span style="font-weight:600;font-size:13px;display:block;margin-bottom:6px">Join Class with Code</span>
+        <div style="display:flex;gap:8px">
+          <input id="st-join-code" placeholder="Enter Class Code (e.g. CSE-A)" style="text-transform:uppercase;flex:1;margin:0" />
+          <button class="btn primary small" type="button" onclick="joinClassByCode()">Join</button>
+        </div>
+      </label>
+      <div id="st-join-msg" class="msg" role="status" style="margin-top:6px"></div>
     </div>
     <button class="btn primary block" onclick="gotoScan()">Scan for Class Session</button>
     <button class="btn block" onclick="renderHistory()">Attendance History</button>

@@ -53,17 +53,38 @@ async function addTeacher() {
 /* ---------------- Add class ---------------- */
 function addClass() {
   if (!currentAdmin) return adminMsg("ac-msg", "Login as admin first.", false);
-  const cid = val("ac-id").trim().toUpperCase(), subject = val("ac-subject").trim(),
+  const cid = val("ac-id").trim().toUpperCase(),
+        code = (val("ac-code").trim().toUpperCase()) || cid,
+        subject = val("ac-subject").trim(),
         tid = el("ac-teacher").value;
   if (!cid || !subject) return adminMsg("ac-msg", "Class ID and subject are required.", false);
+  if (cid.length > 32) return adminMsg("ac-msg", "Class ID cannot exceed 32 characters.", false);
+  if (code.length > 32) return adminMsg("ac-msg", "Class code cannot exceed 32 characters.", false);
   if (!tid) return adminMsg("ac-msg", "Create a teacher first.", false);
   if (DB.classes.some(c => c.class_id === cid)) return adminMsg("ac-msg", "Class ID already exists.", false);
-  DB.classes.push({ class_id: cid, class_name: cid, subject, teacher_id: tid });
-  audit("ADMIN_ADD_CLASS", cid + " subject=" + subject + " teacher=" + tid);
+  if (DB.classes.some(c => (c.class_code || c.class_id).toUpperCase() === code))
+    return adminMsg("ac-msg", "Class code '" + code + "' is already in use.", false);
+  DB.classes.push({ class_id: cid, class_name: cid, subject, teacher_id: tid, class_code: code });
+  audit("ADMIN_ADD_CLASS", cid + " (code=" + code + ") subject=" + subject + " teacher=" + tid);
   saveDB();
   el("ac-id").value = ""; el("ac-subject").value = "";
-  adminMsg("ac-msg", "Class " + cid + " assigned to " + tid + ".", true);
+  if (el("ac-code")) el("ac-code").value = "";
+  adminMsg("ac-msg", "Class " + cid + " (Code: " + code + ") assigned to " + tid + ".", true);
   renderAdmin();
+
+  try {
+    fetch("http://localhost:8000/api/classes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        class_id: cid,
+        class_name: cid,
+        subject: subject,
+        teacher_id: tid,
+        class_code: code
+      })
+    }).catch(() => {});
+  } catch (_) {}
 }
 
 /* ---------------- Schedule class to teacher ---------------- */
@@ -123,7 +144,7 @@ function renderAdmin() {
   const tOpts = '<option value="">— select teacher —</option>' +
     DB.teachers.map(t => '<option value="' + esc(t.teacher_id) + '">' + esc(t.teacher_id) + " · " + esc(t.name) + "</option>").join("");
   const cOpts = '<option value="">— select class —</option>' +
-    DB.classes.map(c => '<option value="' + esc(c.class_id) + '">' + esc(c.class_id) + " · " + esc(c.subject) + "</option>").join("");
+    DB.classes.map(c => '<option value="' + esc(c.class_id) + '">' + esc(c.class_id) + " (Code: " + esc(c.class_code || c.class_id) + ") · " + esc(c.subject) + "</option>").join("");
 
   el("ac-teacher").innerHTML = tOpts;
   el("as-class").innerHTML = cOpts;
@@ -137,7 +158,8 @@ function renderAdmin() {
   el("adm-classes").innerHTML = DB.classes.map(c => {
     const t = DB.teachers.find(x => x.teacher_id === c.teacher_id);
     const scheds = DB.schedules.filter(s => s.class_id === c.class_id).length;
-    return "<tr><td>" + esc(c.class_id) + "</td><td>" + esc(c.subject) + "</td><td>" +
+    const code = c.class_code || c.class_id;
+    return "<tr><td><strong>" + esc(c.class_id) + "</strong><br><small class=\"mono muted\">Code: " + esc(code) + "</small></td><td>" + esc(c.subject) + "</td><td>" +
       esc(t ? t.teacher_id : "-") + "</td><td>" + scheds + "</td><td>" +
       DB.students.filter(s => s.class_id === c.class_id).length + "</td></tr>";
   }).join("") || '<tr><td colspan="5" class="muted">No classes yet.</td></tr>';

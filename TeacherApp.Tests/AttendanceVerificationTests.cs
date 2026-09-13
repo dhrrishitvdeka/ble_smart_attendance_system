@@ -612,6 +612,164 @@ public class AttendanceVerificationTests
         var count = (long)(cmd.ExecuteScalar() ?? 0L);
         Assert.IsGreaterThan(0L, count, "Failed verification must be logged to audit_logs table.");
     }
+
+    [TestMethod]
+    public void TestGetClassByCode_Success()
+    {
+        var cls = _db.GetClassByCode("CSE-A");
+        Assert.IsNotNull(cls);
+        Assert.AreEqual("CSE-A", cls.ClassId);
+        Assert.AreEqual("CSE-A", cls.ClassCode);
+        Assert.AreEqual("Data Structures", cls.Subject);
+    }
+
+    [TestMethod]
+    public void TestGetClassByCode_CaseInsensitive()
+    {
+        var cls = _db.GetClassByCode("cse-a");
+        Assert.IsNotNull(cls);
+        Assert.AreEqual("CSE-A", cls.ClassId);
+    }
+
+    [TestMethod]
+    public void TestGetClassByCode_NotFound()
+    {
+        var cls = _db.GetClassByCode("INVALID-CODE-999");
+        Assert.IsNull(cls);
+    }
+
+    [TestMethod]
+    public void TestAddClass_WithCustomClassCode()
+    {
+        bool added = _db.AddClass("CSE-B", "CSE Section B", "Algorithms", "T001", "ALGO-2026");
+        Assert.IsTrue(added);
+
+        var retrieved = _db.GetClassByCode("algo-2026");
+        Assert.IsNotNull(retrieved);
+        Assert.AreEqual("CSE-B", retrieved.ClassId);
+        Assert.AreEqual("ALGO-2026", retrieved.ClassCode);
+    }
+
+    [TestMethod]
+    public void TestJoinClassWithCode_Success()
+    {
+        _db.AddClass("CSE-SYS", "Systems Lab", "Operating Systems", "T001", "SYS101");
+
+        var studentBefore = _db.GetStudent("S001")!;
+        Assert.AreEqual("CSE-A", studentBefore.ClassId);
+
+        bool joined = _db.JoinClassWithCode("S001", "SYS101");
+        Assert.IsTrue(joined);
+
+        var studentAfter = _db.GetStudent("S001")!;
+        Assert.AreEqual("CSE-SYS", studentAfter.ClassId);
+    }
+
+    [TestMethod]
+    public void TestJoinClassWithCode_InvalidCode()
+    {
+        bool joined = _db.JoinClassWithCode("S001", "NONEXISTENT_CODE");
+        Assert.IsFalse(joined);
+
+        var student = _db.GetStudent("S001")!;
+        Assert.AreEqual("CSE-A", student.ClassId);
+    }
+
+    [TestMethod]
+    public void TestEndToEnd_StudentJoinsClassAndVerifiesAttendance()
+    {
+        // 1. Create a new class with join code 'DIST-SYS'
+        _db.AddClass("CSE-DIST", "Distributed Systems", "Cloud Computing", "T001", "DIST-SYS");
+        var distSession = _db.CreateSession("CSE-DIST", "T001", "Cloud Computing");
+
+        using var server = new GattAttendanceServer(_db);
+        server.InitializeAsync(distSession).GetAwaiter().GetResult();
+
+        var s2 = _db.GetStudent("S002")!;
+        Assert.AreEqual("CSE-A", s2.ClassId);
+
+        // 2. S002 tries to verify for CSE-DIST without joining -> rejected (enrollment check fails)
+        string nonce = "NONCE_BEFORE_JOIN_TEST_123456";
+        server.RegisterChallengeForTest(s2.StudentId, nonce);
+        string hash = ComputeHash(nonce + s2.DeviceSecret);
+        bool okBefore = server.VerifyAndCommit(s2.StudentId, s2.RegisteredDeviceId, hash, "DIRECT", -60, 0, null);
+        Assert.IsFalse(okBefore, "Student should not be verified if not enrolled in session's class.");
+
+        // 3. S002 joins class using code 'DIST-SYS'
+        bool joined = _db.JoinClassWithCode(s2.StudentId, "DIST-SYS");
+        Assert.IsTrue(joined, "Student must successfully join class with valid code.");
+
+        // 4. S002 now verifies -> succeeds and marked ELIGIBLE!
+        string freshNonce = "NONCE_AFTER_JOIN_TEST_789012";
+        server.RegisterChallengeForTest(s2.StudentId, freshNonce);
+        string freshHash = ComputeHash(freshNonce + s2.DeviceSecret);
+        bool okAfter = server.VerifyAndCommit(s2.StudentId, s2.RegisteredDeviceId, freshHash, "DIRECT", -60, 0, null);
+        Assert.IsTrue(okAfter, "Student should be verified after joining the class.");
+
+        var attRecords = _db.GetSessionAttendance(distSession.SessionId);
+        Assert.HasCount(1, attRecords);
+        Assert.AreEqual("ELIGIBLE", attRecords[0].VerificationStatus);
+    }
+
+    [TestMethod]
+    public void TestAddClass_DuplicateClassCodeRejected()
+    {
+        // 1. Adding with class code CSE-A (default class code) must fail
+        bool dup1 = _db.AddClass("CSE-NEW1", "New Class 1", "Algorithms", "T001", "CSE-A");
+        Assert.IsFalse(dup1, "Adding a class with an existing class code must return false.");
+
+        // 2. Adding a new unique code succeeds
+        bool ok = _db.AddClass("CSE-NEW2", "New Class 2", "Algorithms", "T001", "UNIQUE-CODE-1");
+        Assert.IsTrue(ok);
+
+        // 3. Adding again with the same code (case-insensitive) fails
+        bool dup2 = _db.AddClass("CSE-NEW3", "New Class 3", "Algorithms", "T001", "unique-code-1");
+        Assert.IsFalse(dup2, "Adding a duplicate class code case-insensitively must return false.");
+    }
+
+    [TestMethod]
+    public void TestMultiClassEnrollment_StudentRetainedInAllEnrolledClasses()
+    {
+        // 1. Verify S001 starts in CSE-A
+        var cseaStudentsBefore = _db.GetClassStudents("CSE-A");
+        Assert.IsTrue(cseaStudentsBefore.Any(s => s.StudentId == "S001"), "S001 must be in CSE-A roster.");
+
+        // 2. Add new class and S001 joins using code
+        _db.AddClass("CSE-MULTI", "Multi Section", "Operating Systems", "T001", "MULTI-101");
+        bool joined = _db.JoinClassWithCode("S001", "MULTI-101");
+        Assert.IsTrue(joined, "Student must join CSE-MULTI.");
+
+        // 3. S001 must be in CSE-MULTI roster AND STILL in CSE-A roster
+        var multiStudents = _db.GetClassStudents("CSE-MULTI");
+        var cseaStudentsAfter = _db.GetClassStudents("CSE-A");
+
+        Assert.IsTrue(multiStudents.Any(s => s.StudentId == "S001"), "S001 must appear in CSE-MULTI roster.");
+        Assert.IsTrue(cseaStudentsAfter.Any(s => s.StudentId == "S001"), "S001 must STILL appear in CSE-A roster after joining second class.");
+        Assert.IsTrue(_db.IsStudentEnrolledInClass("S001", "CSE-A"), "S001 must be recognized as enrolled in CSE-A.");
+        Assert.IsTrue(_db.IsStudentEnrolledInClass("S001", "CSE-MULTI"), "S001 must be recognized as enrolled in CSE-MULTI.");
+
+        // 4. S001 can successfully verify in BOTH CSE-A and CSE-MULTI sessions
+        var cseaSession = _db.CreateSession("CSE-A", "T001", "Data Structures");
+        using var cseaServer = new GattAttendanceServer(_db);
+        cseaServer.InitializeAsync(cseaSession).GetAwaiter().GetResult();
+
+        var s1 = _db.GetStudent("S001")!;
+        string nonceCsea = "NONCE_CSEA_MULTI_TEST";
+        cseaServer.RegisterChallengeForTest(s1.StudentId, nonceCsea);
+        string hashCsea = ComputeHash(nonceCsea + s1.DeviceSecret);
+        bool cseaVerified = cseaServer.VerifyAndCommit(s1.StudentId, s1.RegisteredDeviceId, hashCsea, "DIRECT", -60, 0, null);
+        Assert.IsTrue(cseaVerified, "S001 must verify in CSE-A session.");
+
+        var multiSession = _db.CreateSession("CSE-MULTI", "T001", "Operating Systems");
+        using var multiServer = new GattAttendanceServer(_db);
+        multiServer.InitializeAsync(multiSession).GetAwaiter().GetResult();
+
+        string nonceMulti = "NONCE_MULTI_SESSION_TEST";
+        multiServer.RegisterChallengeForTest(s1.StudentId, nonceMulti);
+        string hashMulti = ComputeHash(nonceMulti + s1.DeviceSecret);
+        bool multiVerified = multiServer.VerifyAndCommit(s1.StudentId, s1.RegisteredDeviceId, hashMulti, "DIRECT", -60, 0, null);
+        Assert.IsTrue(multiVerified, "S001 must verify in CSE-MULTI session as well.");
+    }
 }
 
 public class MockHttpMessageHandler : System.Net.Http.HttpMessageHandler

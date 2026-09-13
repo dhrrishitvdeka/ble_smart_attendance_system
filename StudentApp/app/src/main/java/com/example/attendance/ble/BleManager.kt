@@ -125,10 +125,13 @@ class BleManager(
                 "ACTIVE_SES"
             }
 
+            val savedClassId = context.getSharedPreferences("ble_attendance_prefs", Context.MODE_PRIVATE)
+                .getString("class_id", "CSE-A") ?: "CSE-A"
+
             val session = AttendanceSession(
                 sessionId = sessionIdStr,
                 nonce = "GATT_QUERY_NEEDED",
-                classId = "CSE-A",
+                classId = savedClassId,
                 rssi = rssi,
                 hopCount = decoded?.hopCount ?: 0,
                 viaStudent = null
@@ -330,16 +333,18 @@ class BleManager(
     }
 
     private fun runSimulatedDiscovery() {
+        val savedClassId = context.getSharedPreferences("ble_attendance_prefs", Context.MODE_PRIVATE)
+            .getString("class_id", "CSE-A") ?: "CSE-A"
         val simulatedSession = AttendanceSession(
             sessionId = "1957F836",
             nonce = "2E2B9D646674CA51",
-            classId = "CSE-A",
+            classId = savedClassId,
             rssi = -62,
             hopCount = 0,
             viaStudent = null
         )
         currentSession = simulatedSession
-        listener.onLog("[SIM] Classroom beacon discovered: Session ${simulatedSession.sessionId} (CSE-A, RSSI: -62 dBm)")
+        listener.onLog("[SIM] Classroom beacon discovered: Session ${simulatedSession.sessionId} ($savedClassId, RSSI: -62 dBm)")
         listener.onBeaconDiscovered(simulatedSession, null)
     }
 

@@ -2,7 +2,7 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from .models import Base, Teacher, CourseClass, Student
+from .models import Base, Teacher, CourseClass, Student, Enrollment
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./attendance.db")
 
@@ -19,6 +19,13 @@ def init_db() -> None:
             cols = [row[1] for row in cursor.fetchall()]
             if cols and "teacher_signature" not in cols:
                 cursor.execute("ALTER TABLE attendance ADD COLUMN teacher_signature VARCHAR(256)")
+                conn.connection.commit()
+
+            cursor.execute("PRAGMA table_info(classes)")
+            c_cols = [row[1] for row in cursor.fetchall()]
+            if c_cols and "class_code" not in c_cols:
+                cursor.execute("ALTER TABLE classes ADD COLUMN class_code VARCHAR(32)")
+                cursor.execute("UPDATE classes SET class_code = class_id WHERE class_code IS NULL")
                 conn.connection.commit()
     except Exception:
         pass
@@ -37,7 +44,8 @@ def init_db() -> None:
                 class_id="CSE-A",
                 class_name="CSE-A",
                 subject="Data Structures",
-                teacher_id="T001"
+                teacher_id="T001",
+                class_code="CSE-A"
             )
             db.add(c1)
             first_names = ["Aarav", "Diya", "Rohan", "Ishaan", "Meera", "Kabir"]
@@ -54,6 +62,33 @@ def init_db() -> None:
                     class_id="CSE-A"
                 )
                 db.add(s)
+                db.add(Enrollment(
+                    enrollment_id=f"enr_{sid}_CSE-A",
+                    student_id=sid,
+                    class_id="CSE-A"
+                ))
+            db.commit()
+        else:
+            # Backfill enrollments for any existing students
+            all_students = db.query(Student).all()
+            for st in all_students:
+                classes_to_enroll = set()
+                if st.class_id:
+                    classes_to_enroll.add(st.class_id)
+                # Baseline demo students S001-S006 are always enrolled in CSE-A
+                if st.student_id in ("S001", "S002", "S003", "S004", "S005", "S006"):
+                    classes_to_enroll.add("CSE-A")
+                    st.class_id = "CSE-A"
+
+                for cid in classes_to_enroll:
+                    has_enr = db.query(Enrollment).filter_by(student_id=st.student_id, class_id=cid).first()
+                    if not has_enr:
+                        import uuid
+                        db.add(Enrollment(
+                            enrollment_id=f"enr_{uuid.uuid4().hex[:12]}",
+                            student_id=st.student_id,
+                            class_id=cid
+                        ))
             db.commit()
     except Exception:
         db.rollback()

@@ -76,8 +76,37 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener, RelayManager.R
     private fun setupUI() {
         val p = currentProfile!!
         binding.tvStudentName.text = "${p.name} (${p.studentId})"
-        binding.tvClassEnrolled.text = "Enrolled: ${p.classId} — Data Structures"
+        binding.tvClassEnrolled.text = "Enrolled Class: ${p.classId}"
         binding.tvDeviceBinding.text = "Device ID: ${p.registeredDeviceId} | Vault: Hardware-Bound PBKDF2"
+
+        binding.btnJoinClass.setOnClickListener {
+            val code = binding.etJoinClassCode.text?.toString()?.trim()?.uppercase() ?: ""
+            if (code.isEmpty()) {
+                binding.tilJoinCode.error = "Please enter class code"
+                return@setOnClickListener
+            }
+            binding.tilJoinCode.error = null
+
+            val cur = currentProfile ?: return@setOnClickListener
+            if (cur.classId.equals(code, ignoreCase = true)) {
+                binding.tvJoinStatus.visibility = View.VISIBLE
+                binding.tvJoinStatus.setTextColor(Color.parseColor("#D97706"))
+                binding.tvJoinStatus.text = "Already enrolled in class $code"
+                return@setOnClickListener
+            }
+
+            val updated = cur.copy(classId = code)
+            currentProfile = updated
+            storage.saveLoggedInProfile(updated)
+
+            binding.tvClassEnrolled.text = "Enrolled Class: ${updated.classId}"
+            binding.tvJoinStatus.visibility = View.VISIBLE
+            binding.tvJoinStatus.setTextColor(Color.parseColor("#059669"))
+            binding.tvJoinStatus.text = "✓ Successfully joined class $code"
+            binding.etJoinClassCode.text?.clear()
+            appendLog("[CLASS] Joined class $code via class code")
+            Toast.makeText(this, "Joined class $code", Toast.LENGTH_SHORT).show()
+        }
 
         binding.btnLogout.setOnClickListener {
             storage.clearProfile()

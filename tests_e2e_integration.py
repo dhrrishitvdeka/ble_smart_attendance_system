@@ -296,3 +296,170 @@ def test_e2e_07_device_id_schema_consistency_and_direct_beacon_codec():
     assert u_sid == session_id_int
     assert f"{u_sid:08X}" == "1957F836"
 
+
+def test_e2e_08_class_code_and_student_join_mechanism():
+    """Verify class creation with class codes, lookup, student joining, and attendance synchronization."""
+    teacher_token = create_access_token({"sub": "T001", "role": "teacher"})
+    student_s3_token = create_access_token({"sub": "S003", "role": "student"})
+    student_s4_token = create_access_token({"sub": "S004", "role": "student"})
+    headers_teacher = {"Authorization": f"Bearer {teacher_token}"}
+    headers_s4 = {"Authorization": f"Bearer {student_s4_token}"}
+
+    # 1. Create a new class with custom class code
+    ts = int(time.time() * 1000)
+    test_class_id = f"NET_{ts}"
+    test_class_code = f"CD_{ts}"
+
+    class_payload = {
+        "class_id": test_class_id,
+        "class_name": "Computer Networks",
+        "subject": "Networks & BLE",
+        "teacher_id": "T001",
+        "class_code": test_class_code
+    }
+    r_create = client.post("/api/classes", json=class_payload, headers=headers_teacher)
+    assert r_create.status_code == 200
+    created = r_create.json()
+    assert created["class_id"] == test_class_id
+    assert created["class_code"] == test_class_code
+
+    # Duplicate class code rejection
+    r_dup = client.post("/api/classes", json=class_payload, headers=headers_teacher)
+    assert r_dup.status_code == 400
+
+    # 2. List classes returns class codes
+    r_list = client.get("/api/classes")
+    assert r_list.status_code == 200
+    classes = r_list.json()
+    net_cls = next(c for c in classes if c["class_id"] == test_class_id)
+    assert net_cls["class_code"] == test_class_code
+
+    # 3. Lookup class by code (case-insensitive)
+    r_code = client.get(f"/api/classes/code/{test_class_code.lower()}")
+    assert r_code.status_code == 200
+    assert r_code.json()["class_id"] == test_class_id
+
+    # Lookup non-existent code
+    r_bad_code = client.get("/api/classes/code/UNKNOWN-999")
+    assert r_bad_code.status_code == 404
+
+    # 4. Student S003 joins class via code
+    # Negative test: missing code
+    r_join_empty = client.post("/api/classes/join", json={"student_id": "S003", "class_code": ""})
+    assert r_join_empty.status_code == 400
+
+    # Negative test: invalid code
+    r_join_invalid = client.post("/api/classes/join", json={"student_id": "S003", "class_code": "WRONG-CODE"})
+    assert r_join_invalid.status_code == 404
+
+    # Positive test: S003 joins via class code
+    r_join_s3 = client.post("/api/classes/join", json={"student_id": "S003", "class_code": test_class_code.lower()})
+    assert r_join_s3.status_code == 200
+    join_data = r_join_s3.json()
+    assert join_data["success"] is True
+    assert join_data["student_id"] == "S003"
+    assert join_data["class_id"] == test_class_id
+
+    # 5. Student S004 joins via v2 Bearer token
+    r_join_s4 = client.post("/api/v2/classes/join", json={"class_code": test_class_code}, headers=headers_s4)
+    assert r_join_s4.status_code == 200
+    assert r_join_s4.json()["student_id"] == "S004"
+    assert r_join_s4.json()["class_id"] == test_class_id
+
+    # 6. Verify class roster now contains S003 and S004
+    r_roster = client.get(f"/api/classes/{test_class_id}/roster")
+    assert r_roster.status_code == 200
+    roster = r_roster.json()
+    roster_sids = [s["student_id"] for s in roster]
+    assert "S003" in roster_sids
+    assert "S004" in roster_sids
+
+    # 7. Teacher can sync attendance for the joined students in a session
+    session_id = f"SES_NET_{ts}"
+    att_s3 = {
+        "attendance_id": f"att_net_s3_{int(time.time() * 1000)}",
+        "session_id": session_id,
+        "student_id": "S003",
+        "timestamp": int(time.time() * 1000),
+        "verification_status": "PRESENT",
+        "route_type": "DIRECT",
+        "rssi_evidence": -62,
+        "hop_count": 0
+    }
+    att_s4 = {
+        "attendance_id": f"att_net_s4_{int(time.time() * 1000)}",
+        "session_id": session_id,
+        "student_id": "S004",
+        "timestamp": int(time.time() * 1000) + 10,
+        "verification_status": "PRESENT",
+        "route_type": "DIRECT",
+        "rssi_evidence": -59,
+        "hop_count": 0
+    }
+    r_sync = client.post("/api/attendance/batch", json=[att_s3, att_s4], headers=headers_teacher)
+    assert r_sync.status_code == 200
+    assert r_sync.json()["stored"] == 2
+
+    # 8. Re-join CSE-A via its class code to verify multi-class transitions and preserve CSE-A roster
+    r_rejoin_s3 = client.post("/api/classes/join", json={"student_id": "S003", "class_code": "CSE-A"})
+    assert r_rejoin_s3.status_code == 200
+    assert r_rejoin_s3.json()["class_id"] == "CSE-A"
+
+    r_rejoin_s4 = client.post("/api/v2/classes/join", json={"class_code": "CSE-A"}, headers=headers_s4)
+    assert r_rejoin_s4.status_code == 200
+    assert r_rejoin_s4.json()["class_id"] == "CSE-A"
+
+    # Verify CSE-A roster has all 6 students back
+    r_csea_roster = client.get("/api/classes/CSE-A/roster")
+    assert r_csea_roster.status_code == 200
+    assert len(r_csea_roster.json()) >= 6
+
+    # 9. Verify multi-class retention: S003 and S004 STILL belong to the NET class!
+    r_net_roster_after = client.get(f"/api/classes/{test_class_id}/roster")
+    assert r_net_roster_after.status_code == 200
+    net_sids_after = [s["student_id"] for s in r_net_roster_after.json()]
+    assert "S003" in net_sids_after, "S003 must be retained in NET class even after re-joining CSE-A"
+    assert "S004" in net_sids_after, "S004 must be retained in NET class even after re-joining CSE-A"
+
+    # 10. Verify student classes query endpoints
+    r_s3_classes = client.get("/api/students/S003/classes")
+    assert r_s3_classes.status_code == 200
+    s3_cids = [c["class_id"] for c in r_s3_classes.json()]
+    assert "CSE-A" in s3_cids
+    assert test_class_id in s3_cids
+
+    r_s4_my_classes = client.get("/api/v2/students/me/classes", headers=headers_s4)
+    assert r_s4_my_classes.status_code == 200
+    s4_cids = [c["class_id"] for c in r_s4_my_classes.json()]
+    assert "CSE-A" in s4_cids
+    assert test_class_id in s4_cids
+
+    # 11. Security & Validation checks
+    # Student role cannot create class
+    r_sec_create = client.post("/api/classes", json={
+        "class_id": f"HACK_{ts}",
+        "class_name": "Hacked Class",
+        "subject": "Unauthorized",
+        "class_code": f"HK_{ts}"
+    }, headers=headers_s4)
+    assert r_sec_create.status_code == 403, "Student must be forbidden from creating classes"
+
+    # Input validation: empty class_id rejected
+    r_val_empty = client.post("/api/classes", json={
+        "class_id": "   ",
+        "class_name": "Invalid",
+        "subject": "No ID"
+    }, headers=headers_teacher)
+    assert r_val_empty.status_code == 400
+
+    # Input validation: non-existent teacher rejected
+    r_val_bad_teacher = client.post("/api/classes", json={
+        "class_id": f"NO_T_{ts}",
+        "class_name": "Invalid",
+        "subject": "Bad Teacher",
+        "teacher_id": "T_NON_EXISTENT"
+    }, headers=headers_teacher)
+    assert r_val_bad_teacher.status_code == 400
+
+
+

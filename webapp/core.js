@@ -137,6 +137,14 @@ function loadDB() {
       DB.seen_request_ids = DB.seen_request_ids || [];
       DB.seen_message_ids = DB.seen_message_ids || [];
       DB.student_secrets = DB.student_secrets || {};
+      (DB.classes || []).forEach(c => {
+        if (!c.class_code) c.class_code = c.class_id;
+      });
+      (DB.students || []).forEach(s => {
+        if (!Array.isArray(s.enrolled_classes) || s.enrolled_classes.length === 0) {
+          s.enrolled_classes = s.class_id ? [s.class_id] : ["CSE-A"];
+        }
+      });
       return;
     }
   } catch (e) {
@@ -155,6 +163,15 @@ function audit(event, detail) {
   saveDB();
 }
 
+function findClassByCode(code) {
+  if (!code) return null;
+  const clean = code.trim().toUpperCase();
+  return (DB.classes || []).find(c =>
+    (c.class_code && c.class_code.trim().toUpperCase() === clean) ||
+    (c.class_id && c.class_id.trim().toUpperCase() === clean)
+  ) || null;
+}
+
 /* ---------------- seed data ---------------- */
 async function seed() {
   DB.admins.push({
@@ -165,7 +182,7 @@ async function seed() {
     teacher_id: "T001", name: "Dr. Sharma", email: "sharma@college.edu",
     password_hash: await hashPassword("T001", "teach123")
   });
-  DB.classes.push({ class_id: "CSE-A", class_name: "CSE-A", subject: "Data Structures", teacher_id: "T001" });
+  DB.classes.push({ class_id: "CSE-A", class_name: "CSE-A", subject: "Data Structures", teacher_id: "T001", class_code: "CSE-A" });
 
   const first = ["Aarav", "Diya", "Rohan", "Ishaan", "Meera", "Kabir"];
   const last  = ["Kumar", "Patel", "Verma", "Singh", "Iyer", "Shah"];
@@ -181,6 +198,7 @@ async function seed() {
       password_hash: await hashPassword(sid, "stud123"),
       registered_device_id: "DEV-" + sid,
       class_id: "CSE-A",
+      enrolled_classes: ["CSE-A"],
       position: "near",
       relay_active_for: null
     });
