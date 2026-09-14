@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BLE Smart Classroom Attendance System</title>
+<link rel="stylesheet" href="styles.css?v=vtop-7" />
+</head>
+<body>
+
+<div class="inst-bar">
+  <div class="inst-bar-inner">
+    <span class="inst-logo">VIT</span>
+    <span class="inst-sub">(Bhopal Campus) &middot; BLE Smart Attendance</span>
+  </div>
+</div>
+
+<!-- ============ ROLE SELECT ============ -->
+<div id="screen-role" class="screen active">
+  <div class="hero">
+    <div class="hero-title">BLE Smart Classroom Attendance System</div>
+    <p class="hero-sub">One common platform for faculty and students to record and verify classroom attendance.<br /><small>Teacher device is the trusted root and final attendance authority. BLE detection alone is never treated as presence.</small></p>
+    <div class="landing-grid">
+    <div class="role-cards">
+      <button class="card" data-role="student">
+        <span class="card-icon" aria-hidden="true">
+          <svg viewBox="0 0 84 64"><g><rect x="26" y="8" width="32" height="10" rx="1.5" fill="#455a64"/><polygon points="42,20 14,12 42,4 70,12" fill="#37474f"/><rect x="60" y="12" width="3" height="16" fill="#78909c"/><circle cx="61.5" cy="31" r="3" fill="#1a73e8"/><circle cx="22" cy="30" r="7" fill="#f2b880"/><rect x="13" y="39" width="18" height="12" rx="3" fill="#1a73e8"/><circle cx="42" cy="32" r="8" fill="#e8a082"/><rect x="32" y="42" width="20" height="13" rx="3" fill="#455a64"/><circle cx="62" cy="32" r="7" fill="#f6a08e"/><rect x="53" y="41" width="18" height="12" rx="3" fill="#90caf9"/></g></svg>
+        </span>
+        <span class="card-text"><strong>Student</strong><small>Login &middot; BLE scan &middot; Verification &middot; History</small></span>
+        <span class="card-login">&#8594;</span>
+      </button>
+      <button class="card" data-role="teacher">
+        <span class="card-icon" aria-hidden="true">
+          <svg viewBox="0 0 84 64"><g><circle cx="24" cy="18" r="9" fill="#90a4ae"/><rect x="13" y="30" width="22" height="24" rx="4" fill="#eceff1"/><polygon points="24,32 20,40 24,52 28,40" fill="#c62828"/><circle cx="52" cy="14" r="10" fill="#b0bec5"/><rect x="40" y="27" width="24" height="27" rx="4" fill="#fafafa" stroke="#cfd8dc"/><polygon points="52,30 48,38 52,52 56,38" fill="#c62828"/></g></svg>
+        </span>
+        <span class="card-text"><strong>Teacher</strong><small>Start session &middot; Live roster &middot; Finalize</small></span>
+        <span class="card-login">&#8594;</span>
+      </button>
+      <button class="card" data-role="admin">
+        <span class="card-icon" aria-hidden="true">
+          <svg viewBox="0 0 84 64"><g><circle cx="42" cy="26" r="16" fill="#e8f5e9" stroke="#1e8e3e" stroke-width="3"/><path d="M30 26l8 8 16-16" fill="none" stroke="#1e8e3e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><rect x="20" y="46" width="44" height="6" rx="3" fill="#a5d6a7"/></g></svg>
+        </span>
+        <span class="card-text"><strong>Admin</strong><small>Teachers &middot; Classes &middot; Schedules &middot; Enrollment</small></span>
+        <span class="card-login">&#8594;</span>
+      </button>
+    </div>
+    <aside class="spotlight">
+      <div class="spotlight-head"><span>Spotlight</span><a href="#" id="spot-toggle" onclick="toggleSpotlight();return false">More ...</a></div>
+      <ul class="timeline">
+        <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Verification chain</span>AUTHENTICATION &rarr; REGISTERED DEVICE &rarr; CURRENT SESSION &rarr; CHALLENGE-RESPONSE &rarr; TEACHER FINALIZES &rarr; PRESENT</span></li>
+        <li><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Demo accounts</span>
+          <span class="cred"><span class="cred-role">Admin</span><code data-copy="A001" title="Click to copy">A001</code><code data-copy="admin123" title="Click to copy">admin123</code></span>
+          <span class="cred"><span class="cred-role">Teacher</span><code data-copy="T001" title="Click to copy">T001</code><code data-copy="teach123" title="Click to copy">teach123</code></span>
+          <span class="cred"><span class="cred-role">Students</span><code data-copy="S001" title="Click to copy">S001&ndash;S006</code><code data-copy="stud123" title="Click to copy">stud123</code></span>
+          <span class="t-note">Serve over <code>http://localhost</code> for Web Bluetooth. Click any credential to copy it.</span>
+        </span></li>
+        <li class="hidden" id="spot-extra"><span class="t-dot" aria-hidden="true"></span><span class="t-body"><span class="t-label">Outside classroom</span>SET POSITION TO "OUTSIDE", ASK A CLASSMATE TO ENABLE RELAY MODE, THEN USE "VERIFY VIA RELAY". RELAYS FORWARD ONLY.</span></li>
+      </ul>
+    </aside>
+    </div>
+    <p class="disclaimer">Unverified students remain NOT VERIFIED, never auto-absent. Relays forward messages only and never authorize attendance.</p>
+  </div>
+</div>
+
+<!-- ============ ADMIN LOGIN ============ -->
+<div id="screen-admin-login" class="screen">
+  <form class="auth-box" onsubmit="adminLogin();return false">
+    <h2>Admin Login</h2>
+    <p class="sub">Restricted to academic administration staff.</p>
+    <label for="a-id">Admin ID<input id="a-id" placeholder="A001" autocomplete="username" required /></label>
+    <label for="a-pass">Password<input id="a-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" required /></label>
+    <div id="a-login-msg" class="msg" role="status"></div>
+    <button class="btn primary block" type="submit">Login</button>
+    <button class="btn ghost block" type="button" onclick="showScreen('screen-role')">Back</button>
+  </form>
+</div>
+
+<!-- ============ ADMIN DASHBOARD ============ -->
+<div id="screen-admin" class="screen">
+  <header class="topbar">
+    <span><strong>Admin Console</strong> <span class="muted">&middot; <span id="admin-name"></span></span></span>
+    <button class="btn small ghost" onclick="adminLogout()">Logout</button>
+  </header>
+
+  <section class="panel">
+    <h3>Add Teacher</h3>
+    <div class="row">
+      <label>Teacher ID<input id="at-id" placeholder="T002" style="max-width:200px" /></label>
+      <label>Full name<input id="at-name" placeholder="Full name" style="max-width:220px" /></label>
+      <label>Email (optional)<input id="at-email" placeholder="name@college.edu" style="max-width:240px" /></label>
+      <label>Password<input id="at-pass" type="password" placeholder="Set password" style="max-width:180px" autocomplete="new-password" /></label>
+      <button class="btn primary" onclick="addTeacher()">Add Teacher</button>
+    </div>
+    <div id="at-msg" class="msg" role="status"></div>
+  </section>
+
+  <section class="panel">
+    <h3>Add Class (assigned to a teacher)</h3>
+    <div class="row">
+      <label>Class ID<input id="ac-id" placeholder="CSE-B" style="max-width:140px" /></label>
+      <label>Class Code (optional)<input id="ac-code" placeholder="e.g. CSE-B" style="max-width:140px" /></label>
+      <label>Subject<input id="ac-subject" placeholder="Subject" style="max-width:200px" /></label>
+      <label>Teacher<select id="ac-teacher" style="max-width:220px"></select></label>
+      <button class="btn primary" onclick="addClass()">Add Class</button>
+    </div>
+    <div id="ac-msg" class="msg" role="status"></div>
+  </section>
+
+  <section class="panel">
+    <h3>Schedule a Class to a Teacher</h3>
+    <div class="row">
+      <label>Class<select id="as-class" style="max-width:220px"></select></label>
+      <label>Teacher<select id="as-teacher" style="max-width:220px"></select></label>
+      <label>Day<input id="as-day" placeholder="Mon" style="max-width:110px" /></label>
+      <label>Start<input id="as-start" placeholder="09:00" style="max-width:100px" /></label>
+      <label>End<input id="as-end" placeholder="10:00" style="max-width:100px" /></label>
+      <button class="btn primary" onclick="addSchedule()">Schedule</button>
+    </div>
+    <div id="as-msg" class="msg" role="status"></div>
+    <table class="tbl"><thead><tr><th>Class</th><th>Teacher</th><th>Day</th><th>Time</th><th><span class="muted">Action</span></th></tr></thead><tbody id="adm-schedules"></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h3>Add Student (enrolled in one selected class only)</h3>
+    <div class="row">
+      <label>Student ID<input id="asn-id" placeholder="S007" style="max-width:180px" /></label>
+      <label>Full name<input id="asn-name" placeholder="Full name" style="max-width:220px" /></label>
+      <label>Email (optional)<input id="asn-email" placeholder="id@student.college.edu" style="max-width:240px" /></label>
+      <label>Password<input id="asn-pass" type="password" placeholder="Set password" style="max-width:180px" autocomplete="new-password" /></label>
+      <label>Class<select id="asn-class" style="max-width:220px"></select></label>
+      <button class="btn primary" onclick="addStudent()">Enroll Student</button>
+    </div>
+    <div id="asn-msg" class="msg" role="status"></div>
+    <p class="hint">The device ID is auto-registered (DEV-&lt;student_id&gt;). Students can only attend sessions of their own enrolled class.</p>
+  </section>
+
+  <details class="panel">
+    <summary>Teachers</summary>
+    <table class="tbl"><thead><tr><th>ID</th><th>Name</th><th>Email</th></tr></thead><tbody id="adm-teachers"></tbody></table>
+  </details>
+
+  <details class="panel">
+    <summary>Classes</summary>
+    <table class="tbl"><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Schedules</th><th>Students</th></tr></thead><tbody id="adm-classes"></tbody></table>
+  </details>
+
+  <details class="panel">
+    <summary>Students and their enrolled class</summary>
+    <table class="tbl"><thead><tr><th>ID</th><th>Name</th><th>Class</th><th>Device</th></tr></thead><tbody id="adm-students"></tbody></table>
+  </details>
+</div>
+
+<!-- ============ TEACHER LOGIN ============ -->
+<div id="screen-teacher-login" class="screen">
+  <form class="auth-box" onsubmit="teacherLogin();return false">
+    <h2>Teacher Login</h2>
+    <p class="sub">Use the ID issued by the admin office.</p>
+    <label for="t-id">Teacher ID<input id="t-id" placeholder="T001" autocomplete="username" required /></label>
+    <label for="t-pass">Password<input id="t-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" required /></label>
+    <div id="t-login-msg" class="msg" role="status"></div>
+    <button class="btn primary block" type="submit">Login</button>
+    <button class="btn ghost block" type="button" onclick="showScreen('screen-role')">Back</button>
+  </form>
+</div>
+
+<!-- ============ TEACHER DASHBOARD ============ -->
+<div id="screen-teacher" class="screen">
+  <header class="topbar">
+    <span><strong>Teacher Console</strong> <span class="muted">&middot; <span id="t-name"></span></span></span>
+    <button class="btn small ghost" onclick="teacherLogout()">Logout</button>
+  </header>
+
+  <section class="panel" id="setup-panel">
+    <h3>1 &mdash; Start Attendance Session</h3>
+    <div class="row">
+      <label>Class
+        <select id="class-select"></select>
+      </label>
+      <button id="btn-start" class="btn primary" onclick="startSession()">Start Attendance</button>
+      <span id="ble-support" class="badge ok">BLE GATT peripheral supported</span>
+    </div>
+    <p class="hint">A random temporary session ID and nonce are generated. The session expires automatically after 10 minutes.</p>
+  </section>
+
+  <section class="panel hidden" id="session-panel">
+    <h3>2 &mdash; Active Session</h3>
+    <div class="session-grid">
+      <div><span class="k">Class</span><span id="s-class"></span></div>
+      <div><span class="k">Class Code</span><span id="s-code" class="mono highlight"></span></div>
+      <div><span class="k">Subject</span><span id="s-subject"></span></div>
+      <div><span class="k">Session ID</span><span id="s-id" class="mono highlight"></span></div>
+      <div><span class="k">Status</span><span id="s-status"></span></div>
+      <div><span class="k">Expires in</span><span id="s-expiry" class="mono"></span></div>
+      <div><span class="k">Nonce</span><span id="s-nonce" class="mono"></span></div>
+    </div>
+
+    <h3>3 &mdash; Live Classroom Attendance</h3>
+    <table class="tbl" id="live-table">
+      <thead>
+        <tr><th>Student</th><th>Status</th><th>Route</th><th>RSSI (evidence)</th><th>Challenge</th><th>Time</th><th>Review</th></tr>
+      </thead>
+      <tbody id="live-body"></tbody>
+    </table>
+    <div class="summary" id="summary"></div>
+    <div class="row">
+      <button class="btn primary" onclick="finalizeAttendance()">Finalize Attendance</button>
+      <button class="btn" onclick="endSession()">End Session</button>
+      <span id="net-status" class="badge warn">Offline &mdash; local storage only</span>
+      <button class="btn ghost small" onclick="toggleNetwork()">Toggle Internet</button>
+      <button class="btn ghost small" onclick="syncToCloud()">Sync to Cloud</button>
+    </div>
+    <div id="sync-log" class="log" aria-live="polite"></div>
+  </section>
+
+  <details class="panel">
+    <summary>Audit Log</summary>
+    <div id="audit-log" class="log" aria-live="polite"></div>
+  </details>
+</div>
+
+<!-- ============ STUDENT LOGIN ============ -->
+<div id="screen-student-login" class="screen">
+  <form class="auth-box phone-frame" onsubmit="studentLogin();return false">
+    <h2>Student Login</h2>
+    <p class="sub">Attendance is bound to your registered device.</p>
+    <label for="st-id">Student ID<input id="st-id" placeholder="S001" autocomplete="username" required /></label>
+    <label for="st-pass">Password<input id="st-pass" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password" required /></label>
+    <div id="st-login-msg" class="msg" role="status"></div>
+    <button class="btn primary block" type="submit">Login</button>
+    <button class="btn ghost block" type="button" onclick="showScreen('screen-role')">Back</button>
+  </form>
+</div>
+
+<!-- ============ STUDENT APP ============ -->
+<div id="screen-student" class="screen">
+  <header class="topbar">
+    <span><strong>Student App</strong> <span class="muted">&middot; <span id="st-name"></span></span></span>
+    <button class="btn small ghost" onclick="studentLogout()">Logout</button>
+  </header>
+
+  <!-- Home / profile -->
+  <section class="phone-page active" id="sp-home">
+    <div class="profile-card panel">
+      <div class="avatar" aria-hidden="true">S</div>
+      <h3 id="p-name"></h3>
+      <p class="mono muted" id="p-meta"></p>
+      <div class="row">
+        <span class="badge" id="p-device"></span>
+        <span class="badge" id="p-class"></span>
+      </div>
+      <div class="row status-row">
+        <span class="badge warn" id="ble-status">BLE status&hellip;</span>
+      </div>
+      <div class="row pos-row">
+        <label>Simulated position (for testing)
+          <select id="sim-position" onchange="setSimPosition(this.value)">
+            <option value="near">Near &mdash; strong signal</option>
+            <option value="back">Back of classroom &mdash; moderate</option>
+            <option value="outside">Outside classroom &mdash; no direct link</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:10px">
+      <label style="margin:0;display:block">
+        <span style="font-weight:600;font-size:13px;display:block;margin-bottom:6px">Join Class with Code</span>
+        <div style="display:flex;gap:8px">
+          <input id="st-join-code" placeholder="Enter Class Code (e.g. CSE-A)" style="text-transform:uppercase;flex:1;margin:0" />
+          <button class="btn primary small" type="button" onclick="joinClassByCode()">Join</button>
+        </div>
+      </label>
+      <div id="st-join-msg" class="msg" role="status" style="margin-top:6px"></div>
+    </div>
+    <button class="btn primary block" onclick="gotoScan()">Scan for Class Session</button>
+    <button class="btn block" onclick="renderHistory()">Attendance History</button>
+    <label class="relay-toggle panel">
+      <input type="checkbox" id="relay-mode" onchange="toggleRelay(this.checked)" />
+      <span>Act as BLE relay for classmates (only during an active session). Relays forward messages only and never mark attendance.</span>
+    </label>
+    <div id="relay-info" class="msg" role="status"></div>
+  </section>
+
+  <!-- Scan -->
+  <section class="phone-page" id="sp-scan">
+    <h3>Scanning for teacher session</h3>
+    <p class="muted" style="font-size:13.5px;margin:6px 0 0">Keep Bluetooth on. The scan lasts about 2 seconds.</p>
+    <div class="scan-anim" aria-hidden="true"><div></div></div>
+    <div id="ble-status-scan" class="badge warn"></div>
+    <div id="scan-result"></div>
+    <button class="btn block" onclick="attemptRelay()">Try Relay Path (if direct fails)</button>
+    <button class="btn ghost block" onclick="stopScan();studentHome()">Cancel</button>
+  </section>
+
+  <!-- Verification -->
+  <section class="phone-page" id="sp-verify">
+    <h3>Verification</h3>
+    <div id="verify-steps"></div>
+  </section>
+
+  <!-- Result -->
+  <section class="phone-page" id="sp-result">
+    <div id="result-content"></div>
+    <button class="btn primary block" onclick="studentHome()">Done</button>
+  </section>
+
+  <!-- History -->
+  <section class="phone-page" id="sp-history">
+    <h3>Attendance History</h3>
+    <table class="tbl"><thead><tr><th>Date</th><th>Subject</th><th>Status</th><th>Route</th></tr></thead><tbody id="history-body"></tbody></table>
+    <button class="btn block" onclick="studentHome()">Back</button>
+  </section>
+</div>
+
+<div class="page-footer">BLE-assisted verification &middot; Unverified students are never auto-marked absent</div>
+
+<script src="core.js?v=vtop-6"></script>
+<script src="admin.js?v=vtop-6"></script>
+<script src="teacher.js?v=vtop-6"></script>
+<script src="student.js?v=vtop-6"></script>
+</body>
+</html>
