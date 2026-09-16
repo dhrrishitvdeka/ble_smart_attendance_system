@@ -1,25 +1,41 @@
 """FastAPI cloud sync endpoint (spec §20). Idempotent on attendance_id with JWT authentication & role enforcement."""
 import os
+import secrets
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 import jwt
 
 from .database import SessionLocal, init_db
-from .models import Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent, Enrollment
+from .models import Administrator, Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent, Enrollment
+from .security import hash_password, verify_password
 
 init_db()
 
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-attendance-key-with-at-least-32-bytes-length!")
+JWT_SECRET = os.getenv("JWT_SECRET") or secrets.token_urlsafe(48)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_SECONDS = 3600 * 24  # 24 hours
-ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "false").lower() in ("true", "1")
+ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "true").lower() in ("true", "1")
+
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5500").split(",") if o.strip()
+]
+
+MAX_BATCH_SIZE = 500
+ATTENDANCE_ID_MAX = 64
+SESSION_ID_MAX = 64
+STUDENT_ID_MAX = 32
+TIMESTAMP_MIN = 0
+TIMESTAMP_MAX = 4102444800000  # 2100-01-01
+RSSI_MIN, RSSI_MAX = -127, 0
+HOP_MAX = 2
 
 
 @asynccontextmanager
@@ -32,10 +48,10 @@ app = FastAPI(title="BLE Attendance Cloud Sync", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -56,11 +72,16 @@ def create_access_token(data: dict, expires_in: int = JWT_EXPIRATION_SECONDS) ->
 
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"require": ["exp", "iat", "sub", "role"]})
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has expired")
     except jwt.PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if not isinstance(claims.get("sub"), str) or not claims["sub"].strip():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if claims.get("role") not in ("student", "teacher", "admin"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    return claims
 
 
 def get_auth_context(authorization: Optional[str] = Header(None)) -> Optional[dict]:
@@ -121,16 +142,16 @@ class LoginResponse(BaseModel):
 
 
 class AttendanceIn(BaseModel):
-    attendance_id: str
-    session_id: str
-    student_id: str
-    timestamp: int
+    attendance_id: str = Field(min_length=1, max_length=ATTENDANCE_ID_MAX)
+    session_id: str = Field(min_length=1, max_length=SESSION_ID_MAX)
+    student_id: str = Field(min_length=1, max_length=STUDENT_ID_MAX)
+    timestamp: int = Field(ge=TIMESTAMP_MIN, le=TIMESTAMP_MAX)
     verification_status: str
     route_type: str = "DIRECT"
-    rssi_evidence: int | None = None
-    hop_count: int = 0
-    via_student: str | None = None
-    teacher_signature: str | None = None
+    rssi_evidence: int | None = Field(default=None, ge=RSSI_MIN, le=RSSI_MAX)
+    hop_count: int = Field(default=0, ge=0, le=HOP_MAX)
+    via_student: str | None = Field(default=None, max_length=128)
+    teacher_signature: str | None = Field(default=None, max_length=256)
 
 
 class ClassCreate(BaseModel):
@@ -154,27 +175,20 @@ def health():
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     u = req.username.strip().upper()
-    p = req.password.strip()
+    p = req.password
 
-    # Pre-seeded credentials check
-    if u == "A001" and p == "admin123":
+    admin = db.get(Administrator, u)
+    if admin and verify_password(p, admin.password_hash):
         token = create_access_token({"sub": u, "role": "admin"})
         return LoginResponse(access_token=token, user_id=u, role="admin")
-    if u == "T001" and p == "teach123":
-        token = create_access_token({"sub": u, "role": "teacher"})
-        return LoginResponse(access_token=token, user_id=u, role="teacher")
-    if u.startswith("S00") and p == "stud123":
-        token = create_access_token({"sub": u, "role": "student"})
-        return LoginResponse(access_token=token, user_id=u, role="student")
 
-    # DB lookup
     t = db.get(Teacher, u)
-    if t and (p == "teach123" or t.password_hash == p):
+    if t and verify_password(p, t.password_hash):
         token = create_access_token({"sub": u, "role": "teacher"})
         return LoginResponse(access_token=token, user_id=u, role="teacher")
 
     s = db.get(Student, u)
-    if s and (p == "stud123" or s.password_hash == p):
+    if s and verify_password(p, s.password_hash):
         token = create_access_token({"sub": u, "role": "student"})
         return LoginResponse(access_token=token, user_id=u, role="student")
 
@@ -311,13 +325,13 @@ def list_session_v2(
 
 
 class RelayEventIn(BaseModel):
-    event_id: str
-    session_id: str
-    message_id: str
-    source_student_id: str
-    relay_student_id: str
-    hop_count: int = 1
-    timestamp: int
+    event_id: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=SESSION_ID_MAX)
+    message_id: str = Field(min_length=1, max_length=64)
+    source_student_id: str = Field(min_length=1, max_length=STUDENT_ID_MAX)
+    relay_student_id: str = Field(min_length=1, max_length=STUDENT_ID_MAX)
+    hop_count: int = Field(default=1, ge=0, le=HOP_MAX)
+    timestamp: int = Field(ge=TIMESTAMP_MIN, le=TIMESTAMP_MAX)
     status: str = "FORWARDED"
 
 
@@ -583,7 +597,6 @@ def join_class_by_code(
         raise HTTPException(status_code=404, detail=f"Student ID '{student_id}' not found in registry")
 
     # If student previously had an enrolled class, ensure it is recorded in Enrollment
-    import uuid
     if student.class_id and student.class_id != course.class_id:
         prior_enr = db.scalars(
             select(Enrollment).where(

@@ -38,12 +38,11 @@ def test_unauthenticated_ingestion_rejects_arbitrary_student():
     assert response.status_code == 401
 
 
-def test_claim_unauthenticated_roster_disclosure():
-    """Verify that GET /api/attendance/{session_id} discloses attendance without auth."""
+def test_unauthenticated_roster_disclosure_blocked():
+    """Verify that GET /api/attendance/{session_id} no longer discloses attendance without auth."""
     response = client.get(f"/api/attendance/{SESSION_ID}")
-    assert response.status_code == 200
-    records = response.json()
-    assert not any(r["student_id"] == STUDENT_ID for r in records)
+    assert response.status_code == 401
+    assert "detail" in response.json()
 
 
 def test_claim_weak_password_hashing_scheme():
