@@ -25,7 +25,7 @@ JWT_EXPIRATION_SECONDS = 3600 * 24  # 24 hours
 ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "true").lower() in ("true", "1")
 
 ALLOWED_ORIGINS = [
-    o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5500").split(",") if o.strip()
+    o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()
 ]
 
 MAX_BATCH_SIZE = 500
@@ -201,6 +201,8 @@ def sync_attendance(
     auth: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
+    if item.session_id.startswith("demo_"):
+        raise HTTPException(409, "Demo records must use the demo verification workflow")
     if item.route_type not in ("DIRECT", "RELAY"):
         raise HTTPException(400, "route_type must be DIRECT or RELAY")
     if auth and auth.get("role") not in ("teacher", "admin"):
@@ -223,8 +225,14 @@ def sync_batch(
     if auth and auth.get("role") not in ("teacher", "admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Teacher role required for batch attendance sync")
 
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(413, "Batch exceeds 500 records")
+    if any(item.session_id.startswith("demo_") for item in items):
+        raise HTTPException(409, "Demo records must use the demo verification workflow")
     stored, ignored = 0, 0
     for item in items:
+        if item.route_type not in ("DIRECT", "RELAY", "MANUAL") or item.verification_status not in ("ELIGIBLE", "PRESENT", "NOT_VERIFIED"):
+            raise HTTPException(400, "Invalid attendance route or status")
         if db.get(Attendance, item.attendance_id):
             ignored += 1
             continue
@@ -270,6 +278,8 @@ def sync_attendance_v2(
     teacher: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
+    if item.session_id.startswith("demo_"):
+        raise HTTPException(409, "Demo records must use the demo verification workflow")
     if item.route_type not in ("DIRECT", "RELAY"):
         raise HTTPException(400, "route_type must be DIRECT or RELAY")
     existing = db.get(Attendance, item.attendance_id)
@@ -286,8 +296,14 @@ def sync_batch_v2(
     teacher: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(413, "Batch exceeds 500 records")
+    if any(item.session_id.startswith("demo_") for item in items):
+        raise HTTPException(409, "Demo records must use the demo verification workflow")
     stored, ignored = 0, 0
     for item in items:
+        if item.route_type not in ("DIRECT", "RELAY", "MANUAL") or item.verification_status not in ("ELIGIBLE", "PRESENT", "NOT_VERIFIED"):
+            raise HTTPException(400, "Invalid attendance route or status")
         if db.get(Attendance, item.attendance_id):
             ignored += 1
             continue
@@ -731,7 +747,15 @@ def get_student_classes(
     auth: Optional[dict] = Depends(get_auth_context),
     db: Session = Depends(get_db)
 ):
+    if not auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     sid = student_id.strip().upper()
+    if auth.get("role") == "student" and auth.get("sub") != sid:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students may only view their own classes")
     student = db.get(Student, sid)
     if not student:
         raise HTTPException(status_code=404, detail=f"Student '{sid}' not found in registry")
@@ -788,4 +812,18 @@ def get_my_classes_v2(
     ]
 
 
+from pathlib import Path
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from .demo import router as demo_router
 
+app.include_router(demo_router)
+WEB_ROOT = Path(__file__).resolve().parent.parent / "webapp"
+
+
+@app.get("/", include_in_schema=False)
+def demo_page():
+    return FileResponse(WEB_ROOT / "demo.html")
+
+
+app.mount("/webapp", StaticFiles(directory=WEB_ROOT), name="webapp")
