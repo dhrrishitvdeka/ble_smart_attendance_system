@@ -1,0 +1,17 @@
+{
+  "attendance_service": "a5e8c0de-0001-4b7d-9c11-000000000001",
+  "session_characteristic": "a5e8c0de-0002-4b7d-9c11-000000000002",
+  "request_characteristic": "a5e8c0de-0003-4b7d-9c11-000000000003",
+  "challenge_characteristic": "a5e8c0de-0004-4b7d-9c11-000000000004",
+  "response_characteristic": "a5e8c0de-0005-4b7d-9c11-000000000005",
+  "result_characteristic": "a5e8c0de-0006-4b7d-9c11-000000000006",
+  "relay_characteristic": "a5e8c0de-0007-4b7d-9c11-000000000007",
+  "company_id": 65535,
+  "magic": 181,
+  "max_hops": 2,
+  "rssi_floor_dbm": -90,
+  "rssi_threshold_ble_dbm": -85,
+  "session_ttl_ms": 600000,
+  "challenge_ttl_ms": 30000,
+  "note": "Single source of truth for UUIDs + radio constants. Web (webapp/core.js), Android (PayloadCodec.kt) and Windows (BleTeacherBroadcaster.cs) must match these values."
+}
