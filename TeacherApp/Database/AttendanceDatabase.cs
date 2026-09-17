@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace TeacherApp.Database;
@@ -433,14 +431,43 @@ public class AttendanceDatabase : IDisposable
         return new SessionRecord(sessionId, classId, teacherId, subject, startTime, expTime, nonce, "ACTIVE");
     }
 
+    public SessionRecord? GetSession(string sessionId)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT session_id, class_id, teacher_id, subject, start_time, expiration_time, random_nonce, status FROM sessions WHERE session_id = @sid;";
+        cmd.Parameters.AddWithValue("@sid", sessionId);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? new SessionRecord(reader.GetString(0), reader.GetString(1), reader.GetString(2),
+            reader.GetString(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetString(6), reader.GetString(7)) : null;
+    }
+
+    public object SyncRoot { get; } = new();
+
     public bool RecordAttendance(string attendanceId, string sessionId, string studentId, string status, string routeType, int? rssi, int hopCount, string? viaStudent)
     {
+        lock (SyncRoot)
+            return RecordAttendanceCore(attendanceId, sessionId, studentId, status, routeType, rssi, hopCount, viaStudent);
+    }
+
+    private bool RecordAttendanceCore(string attendanceId, string sessionId, string studentId, string status, string routeType, int? rssi, int hopCount, string? viaStudent)
+    {
+        if (string.IsNullOrWhiteSpace(attendanceId) || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(studentId))
+            return false;
+        if (status != "ELIGIBLE" && status != "PRESENT" && status != "NOT_VERIFIED")
+            return false;
+        if (routeType != "DIRECT" && routeType != "RELAY" && routeType != "MANUAL")
+            return false;
+        var session = GetSession(sessionId);
+        if (session == null || session.Status != "ACTIVE" || session.ExpirationTime <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            || !IsStudentEnrolledInClass(studentId, session.ClassId))
+            return false;
         try
         {
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                INSERT OR REPLACE INTO attendance (attendance_id, session_id, student_id, timestamp, verification_status, route_type, rssi_evidence, hop_count, via_student, synced)
-                VALUES (@aid, @sid, @stuid, @ts, @status, @route, @rssi, @hops, @via, 0);
+                INSERT INTO attendance (attendance_id, session_id, student_id, timestamp, verification_status, route_type, rssi_evidence, hop_count, via_student, synced)
+                VALUES (@aid, @sid, @stuid, @ts, @status, @route, @rssi, @hops, @via, 0)
+                ON CONFLICT(session_id, student_id) DO NOTHING;
             ";
             cmd.Parameters.AddWithValue("@aid", attendanceId);
             cmd.Parameters.AddWithValue("@sid", sessionId);
@@ -451,10 +478,10 @@ public class AttendanceDatabase : IDisposable
             cmd.Parameters.AddWithValue("@rssi", (object?)rssi ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@hops", hopCount);
             cmd.Parameters.AddWithValue("@via", (object?)viaStudent ?? DBNull.Value);
-            cmd.ExecuteNonQuery();
+            int affected = cmd.ExecuteNonQuery();
 
             LogAudit("ATTENDANCE_RECORDED", $"Student {studentId} marked {status} via {routeType} (RSSI: {rssi} dBm)");
-            return true;
+            return affected > 0;
         }
         catch
         {
@@ -485,22 +512,28 @@ public class AttendanceDatabase : IDisposable
 
     public int FinalizeAttendance(string sessionId, string teacherId)
     {
-        using var cmd = _connection.CreateCommand();
-        cmd.CommandText = @"
-            UPDATE attendance
-            SET verification_status = 'PRESENT'
-            WHERE session_id = @sid AND verification_status = 'ELIGIBLE';
-        ";
-        cmd.Parameters.AddWithValue("@sid", sessionId);
-        int modified = cmd.ExecuteNonQuery();
-
-        using var sessCmd = _connection.CreateCommand();
-        sessCmd.CommandText = "UPDATE sessions SET status = 'FINALIZED' WHERE session_id = @sid;";
-        sessCmd.Parameters.AddWithValue("@sid", sessionId);
-        sessCmd.ExecuteNonQuery();
-
-        LogAudit("SESSION_FINALIZED", $"Session {sessionId} finalized by {teacherId}. {modified} students marked PRESENT.");
-        return modified;
+        lock (SyncRoot)
+        {
+            var session = GetSession(sessionId);
+            if (session == null || session.TeacherId != teacherId || session.Status == "FINALIZED") return 0;
+            using var transaction = _connection.BeginTransaction();
+            using var cmd = _connection.CreateCommand();
+            cmd.Transaction = transaction;
+            cmd.CommandText = @"
+                UPDATE attendance SET verification_status = 'PRESENT', synced = 0
+                WHERE session_id = @sid AND verification_status = 'ELIGIBLE';
+            ";
+            cmd.Parameters.AddWithValue("@sid", sessionId);
+            int modified = cmd.ExecuteNonQuery();
+            using var sessCmd = _connection.CreateCommand();
+            sessCmd.Transaction = transaction;
+            sessCmd.CommandText = "UPDATE sessions SET status = 'FINALIZED' WHERE session_id = @sid;";
+            sessCmd.Parameters.AddWithValue("@sid", sessionId);
+            sessCmd.ExecuteNonQuery();
+            transaction.Commit();
+            LogAudit("SESSION_FINALIZED", $"Session {sessionId} finalized by {teacherId}. {modified} students marked PRESENT.");
+            return modified;
+        }
     }
 
     public List<AttendanceRecord> GetUnsyncedAttendance()

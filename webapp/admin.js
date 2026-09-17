@@ -7,6 +7,7 @@
    ============================================================ */
 
 let currentAdmin = null;
+let adminSessionPassword = null;
 
 async function adminLogin() {
   const a = DB.admins.find(x => x.admin_id === val("a-id").toUpperCase());
@@ -15,6 +16,10 @@ async function adminLogin() {
     msg.textContent = "Invalid credentials."; msg.className = "msg err"; return;
   }
   currentAdmin = a;
+  adminSessionPassword = val("a-pass");
+  cloudAuth.delete("admin:" + a.admin_id);
+  msg.textContent = "";
+  msg.className = "msg";
   el("admin-name").textContent = a.name;
   audit("ADMIN_LOGIN", a.admin_id);
   renderAdmin();
@@ -22,6 +27,8 @@ async function adminLogin() {
 }
 
 function adminLogout() {
+  if (currentAdmin) cloudAuth.delete("admin:" + currentAdmin.admin_id);
+  adminSessionPassword = null;
   currentAdmin = null;
   showScreen("screen-role");
 }
@@ -51,7 +58,7 @@ async function addTeacher() {
 }
 
 /* ---------------- Add class ---------------- */
-function addClass() {
+async function addClass() {
   if (!currentAdmin) return adminMsg("ac-msg", "Login as admin first.", false);
   const cid = val("ac-id").trim().toUpperCase(),
         code = (val("ac-code").trim().toUpperCase()) || cid,
@@ -73,9 +80,11 @@ function addClass() {
   renderAdmin();
 
   try {
-    fetch("http://localhost:8000/api/classes", {
+    const adminId = currentAdmin.admin_id;
+    const headers = await cloudHeaders(adminId, adminSessionPassword, "admin");
+    const response = await fetch(apiUrl("/api/classes"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         class_id: cid,
         class_name: cid,
@@ -83,8 +92,15 @@ function addClass() {
         teacher_id: tid,
         class_code: code
       })
-    }).catch(() => {});
-  } catch (_) {}
+    });
+    if (!response.ok) {
+      if (response.status === 401) cloudAuth.delete("admin:" + adminId);
+      throw new Error("Backend rejected class creation (HTTP " + response.status + ").");
+    }
+    adminMsg("ac-msg", "Class " + cid + " created locally and in the backend.", true);
+  } catch (error) {
+    adminMsg("ac-msg", "Local simulation class only. Backend class creation failed: " + error.message, false);
+  }
 }
 
 /* ---------------- Schedule class to teacher ---------------- */

@@ -111,14 +111,19 @@ let DB = null;
 const DB_KEY = "ble_attendance_db_v2";
 
 function saveDB() {
-  try { localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+  try { localStorage.setItem(DB_KEY, JSON.stringify(DB, (key, value) => key === "cloudToken" ? undefined : value)); }
   catch (e) { console.error("saveDB failed:", e); }
 }
 /* Re-read the shared DB so multi-tab play stays consistent */
 function reloadDB() {
   try {
     const raw = localStorage.getItem(DB_KEY);
-    if (raw) DB = JSON.parse(raw);
+    if (raw) {
+      DB = JSON.parse(raw);
+      if (activeSession) activeSession = DB.sessions.find(s => s.session_id === activeSession.session_id) || null;
+      if (typeof currentStudent !== "undefined" && currentStudent)
+        currentStudent = DB.students.find(s => s.student_id === currentStudent.student_id) || null;
+    }
   } catch (e) {
     console.error("reloadDB: corrupted DB, keeping in-memory copy", e);
   }
@@ -225,9 +230,38 @@ function proximityLabel(rssi) {
 
 /* Active session lookup — shared across tabs via the DB */
 let activeSession = null;
-function getActiveSession() {
-  reloadDB();
-  return DB.sessions.find(s => s.status === "ACTIVE" && now() < s.expiration_time) || null;
+function getActiveSession(teacherId = null) {
+  return DB.sessions.find(s => s.status === "ACTIVE" && now() < s.expiration_time &&
+    (!teacherId || s.teacher_id === teacherId)) || null;
+}
+
+function isEnrolled(student, classId) {
+  return !!student && (student.class_id === classId ||
+    (Array.isArray(student.enrolled_classes) && student.enrolled_classes.includes(classId)));
+}
+
+function apiUrl(path) {
+  return location.protocol === "file:" ? "http://localhost:8000" + path : path;
+}
+
+const cloudAuth = new Map();
+
+async function cloudHeaders(userId, password, role) {
+  const key = role + ":" + userId;
+  if (!cloudAuth.has(key)) {
+    if (!userId || !password) throw new Error("Cloud authentication required. Log in again.");
+    const response = await fetch(apiUrl("/api/auth/login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: userId, password })
+    });
+    if (!response.ok) throw new Error("Cloud login rejected (status " + response.status + ").");
+    const data = await response.json();
+    if (!data.access_token || data.role !== role || data.user_id !== userId)
+      throw new Error("Cloud identity does not match the logged-in " + role + ".");
+    cloudAuth.set(key, data.access_token);
+  }
+  return { "Content-Type": "application/json", Authorization: "Bearer " + cloudAuth.get(key) };
 }
 
 /* ---------------- boot ---------------- */

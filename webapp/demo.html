@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local attendance demonstration</title>
+<link rel="stylesheet" href="/webapp/styles.css">
+<style>
+body{padding:24px;max-width:1000px;margin:auto}section{margin:20px 0;padding:20px;border:1px solid #888;border-radius:8px}label{display:inline-block;margin:8px}input,select,button{padding:10px;margin:4px}table{width:100%;text-align:left}th,td{padding:8px}#message{white-space:pre-wrap} [hidden]{display:none!important}
+</style>
+<script src="/webapp/demo.js" defer></script>
+</head>
+<body>
+<h1>Local attendance demonstration</h1>
+<p><strong>SIMULATION ONLY:</strong> proximity and relay hops are simulated. This demonstrates authenticated attendance and teacher approval, not Bluetooth or hardware attestation.</p>
+<p>Open separate tabs for teacher T001 / teach123 and students S001–S006 / stud123. Admin: A001 / admin123. Each tab signs in independently; records are stored in the local backend, not browser storage.</p>
+<p><a href="/webapp/index.html" style="color: #1a73e8; text-decoration: underline; font-weight: 500;">&rarr; Switch to Full Classroom Simulator (Teacher / Student / Admin UI Portals)</a></p>
+<section id="login-panel">
+<form id="login-form">
+<label>Account <input id="username" required autocomplete="username" value="T001"></label>
+<label>Password <input id="password" type="password" required autocomplete="current-password"></label>
+<button type="submit">Log in</button>
+</form>
+</section>
+<p id="message" role="status" aria-live="polite"></p>
+<main id="workspace" hidden>
+<p><strong id="identity"></strong><button id="refresh">Refresh</button><button id="logout">Log out</button></p>
+<section id="teacher-panel" hidden>
+<h2>Teacher session</h2>
+<label>Class <select id="class-select"></select></label>
+<button id="start">Start 10-minute session</button>
+<button id="finalize">Finalize selected session</button>
+</section>
+<section id="admin-panel" hidden>
+<h2>Create class</h2>
+<form id="class-form">
+<label>Class ID <input id="class-id" required maxlength="32"></label>
+<label>Name <input id="class-name" required maxlength="128"></label>
+<label>Subject <input id="subject" required maxlength="128"></label>
+<label>Teacher <input id="teacher-id" required value="T001" maxlength="32"></label>
+<label>Join code <input id="class-code" required maxlength="32"></label>
+<button type="submit">Create class</button>
+</form>
+</section>
+<section id="student-panel" hidden>
+<h2>Student verification</h2>
+<form id="join-form"><label>Join class code <input id="join-code" required maxlength="32"></label><button type="submit">Join class</button></form>
+<label>Simulated position <select id="position"><option value="near">Near</option><option value="back">Back</option><option value="outside">Outside</option></select></label>
+<label>Simulated route <select id="relay"><option value="">Direct</option></select></label>
+<button id="verify">Verify simulated presence</button>
+<button id="relay-on">Enable relay for selected session</button><button id="relay-off">Disable relay</button>
+<p>Outside + direct is rejected. For a simulated relay, another student must enable relay while near/back, then refresh this tab and select that student.</p>
+</section>
+<section>
+<h2>Sessions and history</h2>
+<label>Session <select id="session-select"></select></label>
+<p id="session-status"></p>
+<table><thead><tr><th>Student</th><th>Name</th><th>Status</th><th>Route</th><th>Simulated RSSI</th></tr></thead><tbody id="attendance"></tbody></table>
+</section>
+</main>
+</body>
+</html>

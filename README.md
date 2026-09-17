@@ -2,196 +2,194 @@
 
 A BLE-assisted attendance verification system for classrooms. The teacher's
 device is the trusted root and the **final attendance authority** — students
-can never mark themselves present, and detecting a Bluetooth signal alone is
-never treated as presence.
+can never mark themselves present, and a Bluetooth signal alone is never
+treated as presence.
 
-**Live demo (no install):**
-https://dhrrishitvdeka.github.io/ble_smart_attendance_system/
+> **This is an educational demonstration.** The browser demo explicitly labels
+> proximity and relay hops as simulated. The native BLE apps require physical
+> teacher hardware and are not required for the local demo.
 
-Use Chrome or Edge on a laptop/desktop for the full experience.
+## Components
 
-> 🛡️ **SYSTEM AUDIT COMPLETE**: A comprehensive forensic architectural, security, and protocol audit has been performed across all components of this repository. Read the exhaustive [System Audit Report (AUDIT_REPORT.md)](AUDIT_REPORT.md) and [Project Architecture & Feature Inventory (PROJECT.md)](PROJECT.md).
+| Component | Directory | Technology | Status |
+| :--- | :--- | :--- | :--- |
+| Local demo (start here) | `Backend/` + `webapp/demo.html` | FastAPI + browser | Working, browser-tested |
+| Legacy browser simulation | `webapp/index.html` | Vanilla JS | Working, syncs with backend |
+| Cloud sync API | `Backend/` | FastAPI / SQLAlchemy | Authentication enforced; pytest coverage |
+| Teacher desktop | `TeacherApp/` | C# / .NET 10 (Windows) | MSTest coverage; hardware validation required |
+| Student mobile | `StudentApp/` | Android / Kotlin | Source only (see limitations) |
+| BLE relay reference | `android-relay-ble/` | Kotlin / C# | Source only (see limitations) |
 
-### Component Implementation Status
+## Quick start (local demo)
 
-| Component | Directory | Stated Technology | Actual Implementation Status | Verification & Test Coverage |
-| :--- | :--- | :--- | :--- | :--- |
-| **Teacher Desktop** | `TeacherApp/` | C# / .NET 10 (Windows) | **Fully Operational & Hardened** | Full GATT server, SQLite 7-table persistence, live interactive dashboard, 15/15 MSTest unit tests passing |
-| **Student Mobile** | `StudentApp/` | Android / Kotlin | **Native Mobile Architecture** | BleManager GATT client, RelayManager mesh forwarding, PBKDF2 hardware secrets, view binding |
-| **BLE Relay & Engine** | `android-relay-ble/` | Kotlin & C# | **PDU-Compliant & Verified** | Connectable ADV_IND, 15B primary PDU ≤ 31B, 180s watchdog recovery, 2-hop limit enforcement |
-| **Web Simulation** | `webapp/` | HTML5 / CSS3 / Vanilla JS | **Full End-to-End Simulation** | Zero-trust decoupled verification, PBKDF2 hashing, live cloud sync over REST API |
-| **Cloud Sync Service** | `Backend/` | Python / FastAPI / SQLite | **Hardened Production REST API** | JWT Bearer auth, 7 normalized relational tables, deduplication, RBAC privacy, 27/27 pytest tests passing |
+Requires Python 3.10+ with `venv`. Run these commands from the repository root.
 
+Windows PowerShell:
 
-
----
-
-## 1. Log in
-
-Pick your portal on the home page and sign in with a demo account:
-
-| Portal  | ID          | Password   |
-|---------|-------------|------------|
-| Admin   | `A001`      | `admin123` |
-| Teacher | `T001`      | `teach123` |
-| Student | `S001`–`S006` | `stud123`  |
-
-> Tip: the credentials are also listed under **Spotlight** on the home page —
-> click any of them to copy it.
-
----
-
-## 2. Admin — first-time setup
-
-Only the admin can create teachers, classes, schedules and student enrollments.
-Do them **in this order**:
-
-1. **Add Teacher** — enter an ID (e.g. `T002`), name and password.
-2. **Add Class** — enter a class ID (e.g. `CSE-B`), a subject, and assign it to
-   a teacher.
-3. **Schedule a Class to a Teacher** — pick the class and teacher, add day/time.
-   A teacher only ever sees classes assigned or scheduled to them.
-4. **Enroll Student** — enter the student details and choose **one** class.
-   Every student belongs to exactly one class and can only attend that
-   class's sessions. The device ID (`DEV-<student_id>`) is registered
-   automatically.
-
-The tables at the bottom always show the current teachers, classes, schedules
-and enrollments.
-
-## 3. Teacher — run attendance
-
-1. Log in and pick your class, then press **Start Attendance**. This creates a
-   random temporary session ID + nonce. The session **expires automatically
-   after 10 minutes**.
-2. Watch the **live roster**: each student shows `NOT VERIFIED`, `ELIGIBLE`
-   (passed all checks, awaiting you) or `PRESENT`, plus their route
-   (`DIRECT` or `VIA <classmate>`) and RSSI proximity evidence.
-3. Optionally use **Mark Present** on individual rows for manual review.
-4. Press **Finalize Attendance** to confirm everyone eligible. Students who
-   never verified stay `NOT VERIFIED` — nobody is auto-marked absent.
-5. **End Session** when the class is over.
-6. Connectivity: use **Toggle Internet** + **Sync to Cloud** to push records to
-   the backend. Syncing is idempotent — re-syncing never creates duplicates.
-
-## 4. Student — verify your presence
-
-1. Log in. Your attendance is bound to your **registered device** and your
-   login session — you can't type in someone else's ID.
-2. Set your **simulated position** on the home screen:
-   - `Near` — strong signal, direct verification works.
-   - `Back of classroom` — moderate signal, direct verification works.
-   - `Outside classroom` — no direct link; you must use the relay path.
-3. Press **Scan for Class Session**, then **Verify My Presence**. You'll see
-   each check pass: identity → device → session → challenge → proximity.
-4. The result is `VERIFICATION COMPLETE` (now `ELIGIBLE`, waiting for the
-   teacher to finalize) or `NOT VERIFIED` with the reason. Check
-   **Attendance History** anytime for your past records.
-
-### Can't reach the teacher? Use a relay
-
-1. Ask a classmate with a working connection to tick
-   **"Act as BLE relay for classmates"** on their home screen
-   (relay mode only works during an active session).
-2. On your phone, scan and press **Verify via Relay** (or **Try Relay Path**).
-   Your request travels Teacher → classmate → you (2 hops max) and still goes
-   through every verification check. Relays only forward messages — they prove
-   connectivity, not presence, and can never mark attendance.
-
-### Real Bluetooth vs simulation
-
-The badge on the student home/scan screens always tells you the active mode:
-
-- **Real BLE available** (Chrome/Edge over `https://` or `http://localhost`):
-  verification attempts a real Web Bluetooth device connection.
-- **Simulation in use** (any other setup): the position-based radio simulation
-  is used instead. This is why you should open the app via `http://localhost`
-  (see below), never as a downloaded file.
-
----
-
-## 5. Run it on your own machine
-
-```bat
-start-webapp.bat
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r Backend/requirements.txt
+.\start-webapp.bat
 ```
 
-or manually:
+Linux/macOS:
 
 ```bash
-python -m http.server 8080 --directory webapp
-# open http://localhost:8080/index.html in Chrome/Edge
+python3 -m venv .venv
+.venv/bin/python -m pip install -r Backend/requirements.txt
+chmod +x start-webapp.sh
+./start-webapp.sh
 ```
 
-> Opening `index.html` directly as a file (`file://`) works for clicks but
-> disables real Web Bluetooth — always serve over localhost.
+Dependencies are downloaded during installation; after that the demo runs locally.
+GitHub Pages cannot host this Python backend; no static deployment workflow is included.
 
-### Optional: cloud-sync backend
+Then open **http://127.0.0.1:8000** in Chrome/Edge. Use separate tabs for each
+role; every tab signs in independently against the local backend.
+
+Demo accounts (created on first run):
+
+| Role | ID | Password |
+| :--- | :--- | :--- |
+| Admin | `A001` | `admin123` |
+| Teacher | `T001` | `teach123` |
+| Students | `S001`–`S006` | `stud123` |
+
+Data persists in `local_demo.db`. Delete it to reset the demo.
+
+### Demo workflow
+
+1. **Admin** creates a class (ID, name, subject, join code).
+2. **Students** join with the join code.
+3. **Teacher** starts a 10-minute session for their class.
+4. **Students** verify: choose a simulated position. `Outside` + direct is
+   rejected; a classmate must enable **relay** first, then you select them as
+   the relay route.
+5. Each verification issues a single-use, expiring challenge from the backend;
+   the browser answers it with SHA-256. This demonstrates the challenge
+   lifecycle — it is **not** hardware attestation.
+6. **Teacher** finalizes: `ELIGIBLE` becomes `PRESENT`, everyone else stays
+   `NOT_VERIFIED` (never auto-absent).
+
+## Legacy browser simulation
+
+`webapp/index.html` is the original multi-screen localStorage simulation. It
+now syncs to the backend with the same-origin API using authenticated teacher
+and student tokens. Start the same server and open
+`http://127.0.0.1:8000/webapp/index.html`.
+
+## Cloud sync API
 
 ```bash
-pip install -r Backend/requirements.txt
-uvicorn Backend.main:app --reload   # sync API on http://localhost:8000
-pytest Backend/tests -q             # 3 tests, all passing
+python -m pip install -r Backend/requirements.txt
+python -m uvicorn Backend.main:app --host 127.0.0.1 --port 8000
+pytest Backend/tests tests_e2e_integration.py -q
 ```
 
-## 6. Troubleshooting
+Authentication is always enforced (`ENFORCE_AUTH`). Set `JWT_SECRET` in
+production; otherwise a random secret is generated per process, invalidating
+tokens on restart. Passwords are PBKDF2-HMAC-SHA256 (600k iterations).
+CORS is limited to `CORS_ORIGINS` (localhost defaults).
 
-| Problem | Fix |
-|---|---|
-| "No active classroom session found" | The teacher hasn't pressed Start Attendance (or it expired after 10 min). |
-| "You are enrolled in X" | That session belongs to another class — log in as a student of that class. |
-| Direct verify fails but you're "near" | Check the BLE badge; outside/localhost or permissions may force simulation — set position to Near. |
-| "No relay available" | No classmate has relay mode on for this session, or you're not in the same class. |
-| Page looks outdated after an update | Hard-refresh: `Ctrl+Shift+R` (or incognito). |
-| Start over completely | Clear the site's local storage in your browser (the demo database lives there), then reload to re-seed demo data. |
+## Native teacher app (Windows)
 
-## 7. How verification works (the short version)
-
-Authentication → registered device → current session → BLE communication →
-proximity evidence (RSSI, never exact distance) → single-use challenge-response
-→ duplicate check → `ELIGIBLE` → **teacher finalizes** → `PRESENT`.
-Anything failing means `NOT VERIFIED`, never automatic absence.
-
-## 8. Automated Test Suites & End-to-End Verification
-
-The repository contains automated unit and integration tests across both .NET and Python:
-
-### 1. Teacher Desktop & GATT Host (.NET 10 / MSTest)
 ```powershell
 dotnet test TeacherApp.Tests
-# 15 passed in ~300ms
+dotnet run --project TeacherApp -- --auto-demo
 ```
-Covers: teacher authentication, session creation & 10-minute expiry, direct check-in with hardware secret, unregistered phone rejection, weak RSSI floor filtering (-90 dBm), single-use anti-replay challenge consumption, 2-hop mesh relay check-in, hop limit enforcement (max 2), attendance finalization (`ELIGIBLE` -> `PRESENT`), relay event persistence, and cloud batch sync.
 
-### 2. Cloud Backend & Synchronization (FastAPI / pytest)
+Requires the .NET 10 SDK and Windows. The GATT server requires a Bluetooth
+adapter with peripheral role support. Simulation is enabled explicitly with
+`--auto-demo` or `--simulate`; missing hardware does not enable it automatically.
+
+## Android apps
+
+`StudentApp/` and `android-relay-ble/` are source-only references in this
+repository. Building them requires the Android SDK and Gradle, which are not
+bundled. The Android BLE client does not fabricate discovery or handshake
+success when a teacher beacon is unreachable. These reference sources are not
+validated for production attendance or hardware interoperability.
+
+## Automated tests
+
+| Suite | Command |
+| :--- | :--- |
+| Full test suite (Backend, e2e, browser acceptance) | `pytest -q` (auto-serves background test instance) |
+| Backend API + demo workflow | `pytest Backend/tests tests_e2e_integration.py -q` |
+| Webapp JS unit regression | `node --test webapp/regression.test.cjs` |
+| Native teacher (.NET) | `dotnet test TeacherApp.Tests` |
+
+Install development dependencies with `python -m pip install -r requirements-dev.txt`
+and Chromium with `python -m playwright install chromium` before browser tests.
+Browser tests automatically spin up an isolated background test server on a temporary database
+when run via `pytest`. For manual isolated runs:
+
 ```powershell
-pytest Backend/tests
-# 21 passed in ~0.9s
+$env:DATABASE_URL = "sqlite:///./browser_test.db"
+.\.venv\Scripts\python.exe -m uvicorn Backend.main:app --host 127.0.0.1 --port 8017 --workers 1
 ```
-Covers: JWT authentication, unauthenticated rejection, single & batch attendance ingestion, idempotency & deduplication, privacy-preserving roster views, CORS headers, relay event persistence.
 
-### 3. Full End-to-End Integration Suite
+In another PowerShell terminal:
+
 ```powershell
-pytest tests_e2e_integration.py
-# 6 passed in ~0.7s
+$env:DEMO_URL = "http://127.0.0.1:8017"
+.\.venv\Scripts\python.exe -m pytest webapp/test_demo_browser.py webapp/test_legacy_browser.py -q
 ```
-Validates the entire end-to-end cyber-physical pipeline across BLE binary packet serialization, PDU budgets, cryptographic handshake, mesh relaying, finalization, cloud ingestion, and role-based access control.
 
-## 9. For developers
+Stop the server before deleting `browser_test.db`. Backend pytest runs use a
+temporary database unless `DATABASE_URL` is already set; unset it before running
+backend tests. JavaScript syntax checks use `node --check webapp/<filename>.js`.
 
-- `AUDIT_REPORT.md` — The publication-grade, authoritative forensic architecture, security, and protocol audit report.
-- `PROJECT.md` — Project architecture summary, comprehensive feature inventory, and phased milestone roadmap.
-- `webapp/` — the full working simulation (no build step): `core.js` (DB,
-  crypto, seed), `admin.js`, `teacher.js`, `student.js`.
-- `Backend/` — FastAPI sync API + tests.
-- `TeacherApp/` — C# / .NET Windows Host application; `TeacherApp.Tests/` — MSTest suite.
-- `StudentApp/` — Android Kotlin BLE client application architecture.
-- `android-relay-ble/` — BLE beacon codec + relay state machine (Kotlin) and
-  Windows broadcaster (C#). `shared/ble_config.json` is the single source of
-  truth for UUIDs, `MAX_HOPS = 2` and radio thresholds.
-- Full spec: `New Text Document.txt`. Known honest limits of BLE/RSSI,
-  background scanning and relay security are documented there (§29) — this
-  system assists verification; it does not mathematically prove physical
+CI runs backend, JavaScript, and Windows teacher tests on pushes to `master` or
+`main` and on pull requests (`.github/workflows/ci.yml`). Browser acceptance and
+Android hardware checks are currently manual.
+
+## How verification works
+
+Authentication → registered device → active session → single-use
+challenge-response → proximity evidence (RSSI, never exact distance) →
+duplicate check → `ELIGIBLE` → **teacher finalizes** → `PRESENT`.
+Any failure means `NOT VERIFIED`, never automatic absence.
+
+## Honest limitations
+
+- The browser demo is a simulation; it cannot prove physical presence.
+- The Android apps are not buildable from this repository alone (no Gradle
+  wrapper or SDK) and have not been verified on hardware in this state.
+- Native credential provisioning and relay transport are incomplete. Android
+  demo secrets are not provisioned from the teacher database; relay references
+  do not provide a complete end-to-end forwarding implementation.
+- Native credential storage, callback threading, and device-specific Bluetooth
+  behavior require further engineering and review before real deployment.
+- The legacy webapp keeps verification state in browser localStorage; the
+  backend-backed demo is the authoritative workflow.
+- RSSI is evidence, not distance. Relay forwarding proves connectivity, never
   presence.
 
+## Contributing
 
+Open an issue describing the problem or proposed change before a large rewrite.
+Keep pull requests focused, include regression tests, and run the relevant suites
+above. Document hardware and SDK versions for native changes. Do not commit local
+databases, credentials, device keys, build outputs, or real student records.
+
+## Security and privacy
+
+This project is an educational prototype, not a production attendance service.
+Demo accounts are seeded automatically with public passwords. Do not expose an
+unmodified instance to the Internet or use it with real student data. A deployment
+requires removal of demo accounts, HTTPS, a strong `JWT_SECRET`, restricted CORS,
+and an independent review of authorization, retention, and consent requirements.
+
+Older revisions used a public fallback JWT signing key. Rotate that key and
+invalidate existing tokens if any deployment used it. Current versions generate
+a runtime secret when `JWT_SECRET` is unset. Native sync trusts authenticated
+teachers for unknown session IDs; it does not independently attest BLE proximity.
+
+Report vulnerabilities privately through GitHub's private vulnerability reporting
+feature if enabled. Do not post credentials, personal data, or sensitive details
+in public issues; request a private contact channel instead.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -12,12 +12,14 @@ let expiryTimer = null;
 function syncFromStorage() {
   const sid = activeSession ? activeSession.session_id : null;
   reloadDB();
-  if (sid) {
-    const s = DB.sessions.find(x => x.session_id === sid);
-    activeSession = s || null;
-  } else {
-    activeSession = getActiveSession();
-  }
+  activeSession = currentTeacher
+    ? (sid ? DB.sessions.find(s => s.session_id === sid && s.teacher_id === currentTeacher.teacher_id)
+      : getActiveSession(currentTeacher.teacher_id)) || null
+    : null;
+}
+
+function ownsSession(session) {
+  return !!currentTeacher && !!session && session.teacher_id === currentTeacher.teacher_id;
 }
 
 function showScreen(id) {
@@ -41,7 +43,7 @@ function armExpiryTimer() {
   expiryTimer = setInterval(() => {
     if (!activeSession) { clearExpiryTimer(); return; }
     syncFromStorage();
-    if (!activeSession) { clearExpiryTimer(); return; }
+    if (!ownsSession(activeSession) || activeSession.status !== "ACTIVE") { clearExpiryTimer(); return; }
     const left = activeSession.expiration_time - now();
     if (left <= 0) {
       activeSession.status = "EXPIRED";
@@ -63,15 +65,15 @@ async function teacherLogin() {
   }
   msg.textContent = ""; msg.className = "msg";
   currentTeacher = t;
-  teacherSessionPassword = val("t-pass") || "teach123";
+  teacherSessionPassword = val("t-pass");
+  cloudAuth.delete("teacher:" + t.teacher_id);
   delete t.password;
   (DB.teachers || []).forEach(x => { delete x.password; });
   el("t-name").textContent = t.name;
 
   // Capability detection (spec §2: never assume peripheral-mode support)
-  const supported = true; // simulated laptop supports GATT server mode
-  el("ble-support").textContent = supported ? "\u2714 BLE GATT peripheral supported" : "\u2718 Not supported";
-  el("ble-support").className = "badge " + (supported ? "ok" : "err");
+  el("ble-support").textContent = "Browser simulation only — no physical BLE peripheral or proximity proof";
+  el("ble-support").className = "badge warn";
   // Only classes scheduled/assigned to THIS teacher are selectable
   const mine = teacherClasses(t.teacher_id);
   el("class-select").innerHTML = mine.length
@@ -87,9 +89,9 @@ async function teacherLogin() {
 
 /* Restore an ACTIVE session from the shared DB (page refresh / other tab) */
 function restoreSession() {
-  const s = getActiveSession();
-  if (!s || !currentTeacher || currentTeacher.teacher_id !== s.teacher_id) return;
-  activeSession = s;
+  syncFromStorage();
+  const s = activeSession;
+  if (!ownsSession(s) || s.status !== "ACTIVE" || now() >= s.expiration_time) return;
   el("setup-panel").classList.add("hidden");
   el("session-panel").classList.remove("hidden");
   el("s-class").textContent = s.class_id;
@@ -106,7 +108,9 @@ function restoreSession() {
 function teacherLogout() {
   if (activeSession && currentTeacher && activeSession.teacher_id === currentTeacher.teacher_id) endSession();
   clearExpiryTimer();
+  if (currentTeacher) cloudAuth.delete("teacher:" + currentTeacher.teacher_id);
   currentTeacher = null;
+  activeSession = null;
   teacherSessionPassword = null;
   showScreen("screen-role");
 }
@@ -115,10 +119,12 @@ function teacherLogout() {
 function startSession() {
   if (!currentTeacher) { alert("Login as teacher first."); return; }
   syncFromStorage();
-  const existing = getActiveSession();
+  const existing = getActiveSession(currentTeacher.teacher_id);
   if (existing) { alert("A session is already active: " + existing.session_id); return; }
   const cls = DB.classes.find(c => c.class_id === el("class-select").value);
-  if (!cls) { alert("No class assigned to you. Ask the admin to schedule a class."); return; }
+  if (!cls || !teacherClasses(currentTeacher.teacher_id).some(c => c.class_id === cls.class_id)) {
+    alert("No class assigned to you. Ask the admin to schedule a class."); return;
+  }
   activeSession = {
     session_id: randHex(8),                    // cryptographically random temp ID
     class_id: cls.class_id,
@@ -131,7 +137,10 @@ function startSession() {
     status: "ACTIVE"
   };
   DB.sessions.push(activeSession);
-  DB.students.forEach(s => { s.relay_active_for = null; });   // relay only per-session
+  DB.students.forEach(s => {
+    if (!DB.sessions.some(session => session.session_id === s.relay_active_for &&
+      session.status === "ACTIVE" && now() < session.expiration_time)) s.relay_active_for = null;
+  });
   audit("SESSION_START", activeSession.session_id + " class=" + cls.class_id + " (code=" + activeSession.class_code + ") nonce=" + activeSession.random_nonce);
   saveDB();
 
@@ -160,7 +169,7 @@ function endSession() {
   if (!activeSession) return;
   if (!currentTeacher) return;
   syncFromStorage();
-  if (!activeSession) return;
+  if (!ownsSession(activeSession)) return;
   activeSession.status = "ENDED";
   audit("SESSION_END", activeSession.session_id);
   saveDB();
@@ -190,7 +199,8 @@ function endSession() {
 
 function teacherHandleChallengeRequest(sessionId, studentId, deviceId) {
   syncFromStorage();
-  const session = getActiveSession();
+  const session = DB.sessions.find(s => s.session_id === sessionId);
+  if (currentTeacher && !ownsSession(session)) return { ok: false, reason: "Session belongs to another teacher." };
   if (!session || session.session_id !== sessionId || session.status !== "ACTIVE" || now() >= session.expiration_time) {
     return { ok: false, reason: "Session is not active or has expired." };
   }
@@ -198,7 +208,7 @@ function teacherHandleChallengeRequest(sessionId, studentId, deviceId) {
   if (!student) {
     return { ok: false, reason: "Student ID not found in roster." };
   }
-  if (student.class_id !== session.class_id) {
+  if (!isEnrolled(student, session.class_id)) {
     return { ok: false, reason: "Student is not enrolled in this session's class." };
   }
   if (deviceId !== student.registered_device_id) {
@@ -226,13 +236,13 @@ function teacherHandleChallengeRequest(sessionId, studentId, deviceId) {
 
 async function teacherVerifyAttendanceSubmission(sessionId, studentId, deviceId, responseHash, routeType, rssiEvidence, relayInfo) {
   syncFromStorage();
-  const session = getActiveSession();
-  if (!session || session.session_id !== sessionId || session.status !== "ACTIVE" || now() >= session.expiration_time) {
+  let session = DB.sessions.find(s => s.session_id === sessionId);
+  if (currentTeacher && !ownsSession(session)) return { ok: false, reason: "Session belongs to another teacher." };
+  if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
     return { ok: false, reason: "Session expired or inactive." };
   }
   const student = DB.students.find(s => s.student_id === studentId);
-  const isEnrolled = student && (student.class_id === session.class_id || (student.enrolled_classes && student.enrolled_classes.includes(session.class_id)));
-  if (!isEnrolled) {
+  if (!isEnrolled(student, session.class_id)) {
     return { ok: false, reason: "Student enrollment invalid for this class." };
   }
   if (deviceId !== student.registered_device_id) {
@@ -241,6 +251,7 @@ async function teacherVerifyAttendanceSubmission(sessionId, studentId, deviceId,
   }
 
   // Validate server-side challenge
+  session = DB.sessions.find(s => s.session_id === sessionId) || session;
   session.pending_challenges = session.pending_challenges || {};
   const ch = session.pending_challenges[studentId];
   if (!ch) {
@@ -376,9 +387,10 @@ function rejectAttendance(student, reason) {
 /* ---- Live dashboard (spec §16) ---------------------------------- */
 function rosterStatuses() {
   const cls = activeSession ? activeSession.class_id : el("class-select").value;
-  return DB.students.filter(s => s.class_id === cls || (s.enrolled_classes && s.enrolled_classes.includes(cls))).map(st => ({
+  const sessId = activeSession ? activeSession.session_id : "_";
+  return DB.students.filter(s => isEnrolled(s, cls)).map(st => ({
     st,
-    rec: DB.attendance.find(a => a.session_id === (activeSession ? activeSession.session_id : "_") && a.student_id === st.student_id)
+    rec: DB.attendance.find(a => a.session_id === sessId && a.student_id === st.student_id)
   }));
 }
 
@@ -471,28 +483,8 @@ async function syncToCloud() {
   }
   log.textContent += `[sync] Syncing ${unsynced.length} records to Cloud Backend (POST /api/attendance/batch)...\n`;
   try {
-    // Authenticate with cloud backend if teacher token is not yet obtained
-    if (currentTeacher && !currentTeacher.cloudToken) {
-      try {
-        const loginResp = await fetch("http://localhost:8000/api/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: currentTeacher.teacher_id,
-            password: teacherSessionPassword || val("t-pass") || "teach123"
-          })
-        });
-        if (loginResp.ok) {
-          const lData = await loginResp.json();
-          currentTeacher.cloudToken = lData.access_token;
-        }
-      } catch (_) { /* offline / backend unreachable */ }
-    }
-
-    const headers = { "Content-Type": "application/json" };
-    if (currentTeacher && currentTeacher.cloudToken) {
-      headers["Authorization"] = "Bearer " + currentTeacher.cloudToken;
-    }
+    if (!currentTeacher) throw new Error("Teacher login required.");
+    const headers = await cloudHeaders(currentTeacher.teacher_id, teacherSessionPassword, "teacher");
 
     const payload = unsynced.map(a => ({
       attendance_id: a.attendance_id,
@@ -506,7 +498,7 @@ async function syncToCloud() {
       via_student: a.via_student || null
     }));
 
-    const resp = await fetch("http://localhost:8000/api/attendance/batch", {
+    const resp = await fetch(apiUrl("/api/attendance/batch"), {
       method: "POST",
       headers,
       body: JSON.stringify(payload)
@@ -522,7 +514,7 @@ async function syncToCloud() {
       const unsyncedRelay = (DB.relay_events || []).filter(r => !r.synced);
       if (unsyncedRelay.length > 0) {
         try {
-          const rResp = await fetch("http://localhost:8000/api/relay-events/batch", {
+          const rResp = await fetch(apiUrl("/api/relay-events/batch"), {
             method: "POST",
             headers,
             body: JSON.stringify(unsyncedRelay.map(r => ({
@@ -550,7 +542,7 @@ async function syncToCloud() {
       log.textContent += `[sync] Cloud rejected (status ${resp.status}) — queued for retry.\n`;
     }
   } catch (err) {
-    // If backend isn't actively running on localhost:8000, fall back to offline simulation
+    // If backend isn't actively running, fall back to offline simulation
     unsynced.forEach(a => {
       log.textContent += `[sync] (Offline Queue) id=${a.attendance_id} student=${a.student_id} queued.\n`;
     });

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Runtime.InteropServices.WindowsRuntime;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -26,7 +25,6 @@ public class GattAttendanceServer : IDisposable
     private readonly ConcurrentDictionary<string, (string ChallengeNonce, long ExpiresAt)> _activeChallenges = new();
     private readonly ConcurrentDictionary<string, string> _deviceToStudent = new();
     private readonly ConcurrentDictionary<string, string> _studentResults = new();
-    private readonly HashSet<string> _seenRequestIds = new();
     private string? _lastChallengeNonce;
     private string? _lastResultStatus;
 
@@ -43,9 +41,14 @@ public class GattAttendanceServer : IDisposable
         _db = db;
     }
 
-    public async Task<bool> InitializeAsync(SessionRecord session)
+    public async Task<bool> InitializeAsync(SessionRecord session, bool enableBluetooth = true)
     {
         _currentSession = session;
+        if (!enableBluetooth)
+        {
+            InitializationError = "Bluetooth disabled for local simulation.";
+            return false;
+        }
         try
         {
             var adapter = await BluetoothAdapter.GetDefaultAsync();
@@ -159,6 +162,15 @@ public class GattAttendanceServer : IDisposable
             {
                 _relayChar = relayResult.Characteristic;
                 _relayChar.WriteRequested += OnRelayWriteRequested;
+            }
+
+            if (_sessionChar == null || _requestChar == null || _challengeChar == null ||
+                _responseChar == null || _resultChar == null || _relayChar == null)
+            {
+                InitializationError = "Failed to create all required GATT characteristics.";
+                _db.LogAudit("GATT_CHARACTERISTIC_ERROR", InitializationError);
+                _serviceProvider = null;
+                return false;
             }
 
             return true;
@@ -353,9 +365,24 @@ public class GattAttendanceServer : IDisposable
 
     public bool VerifyAndCommit(string studentId, string deviceId, string responseHash, string routeType, int rssi, int hopCount, string? viaStudent)
     {
+        lock (_db.SyncRoot)
+        {
+            if (_currentSession != null) _currentSession = _db.GetSession(_currentSession.SessionId);
+            return VerifyAndCommitCore(studentId, deviceId, responseHash, routeType, rssi, hopCount, viaStudent);
+        }
+    }
+
+    private bool VerifyAndCommitCore(string studentId, string deviceId, string responseHash, string routeType, int rssi, int hopCount, string? viaStudent)
+    {
         if (_currentSession == null || _currentSession.Status != "ACTIVE")
         {
             FailStudent(studentId, "Session not active.");
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= _currentSession.ExpirationTime)
+        {
+            FailStudent(studentId, "Session expired.");
             return false;
         }
 

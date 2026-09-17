@@ -18,8 +18,7 @@ SESSION_ID = f"NONEXISTENT_SESSION_{uuid.uuid4().hex[:8]}"
 STUDENT_ID = f"FABRICATED_STUDENT_{uuid.uuid4().hex[:8]}"
 
 
-def test_claim_unauthenticated_ingestion_accepts_arbitrary_student():
-    """Verify that POST /api/attendance requires no auth and accepts fabricated student/session."""
+def test_unauthenticated_ingestion_rejects_arbitrary_student():
     att_id = f"forged_att_{uuid.uuid4().hex[:8]}"
     fake_attendance = {
         "attendance_id": att_id,
@@ -34,20 +33,16 @@ def test_claim_unauthenticated_ingestion_accepts_arbitrary_student():
     }
     # No Authorization header, no teacher token, no signature
     response = client.post("/api/attendance", json=fake_attendance)
-    assert response.status_code == 200, f"Expected 200 OK, got {response.status_code}"
-    data = response.json()
-    assert data["status"] == "stored"
-    assert data["attendance_id"] == att_id
+    assert response.status_code == 401
+    response = client.post("/api/attendance/batch", json=[fake_attendance])
+    assert response.status_code == 401
 
 
-def test_claim_unauthenticated_roster_disclosure():
-    """Verify that GET /api/attendance/{session_id} discloses attendance without auth."""
+def test_unauthenticated_roster_disclosure_blocked():
+    """Verify that GET /api/attendance/{session_id} no longer discloses attendance without auth."""
     response = client.get(f"/api/attendance/{SESSION_ID}")
-    assert response.status_code == 200
-    records = response.json()
-    assert len(records) >= 1
-    found = any(r["student_id"] == STUDENT_ID for r in records)
-    assert found is True, "Fabricated student record should be publicly queryable"
+    assert response.status_code == 401
+    assert "detail" in response.json()
 
 
 def test_claim_weak_password_hashing_scheme():
