@@ -10,17 +10,22 @@ using TeacherApp.Services;
 
 Console.OutputEncoding = Encoding.UTF8;
 Console.WriteLine("===============================================================");
-Console.WriteLine("   BLE Smart Classroom Attendance System — Teacher Host (.NET 8)");
+Console.WriteLine("   BLE Smart Classroom Attendance System — Teacher Host (.NET 10)");
 Console.WriteLine("   Root of Trust & Attendance Finalization Authority");
 Console.WriteLine("===============================================================\n");
 
-using var db = new AttendanceDatabase();
+bool autoDemo = args.Contains("--auto-demo") || args.Contains("--test");
+bool simulation = autoDemo || args.Contains("--simulate");
+using var db = new AttendanceDatabase(simulation ? ":memory:" : "teacher_attendance.db");
 var cloudSync = new CloudSyncService(db);
 
 // 1. Hardware Capability Probing (spec §2)
 Console.Write("[1/6] Probing Bluetooth Low Energy radio hardware... ");
-bool bleSupported = false;
-try
+if (simulation)
+{
+    Console.WriteLine("SKIPPED (isolated simulation; no radio or cloud access).");
+}
+else try
 {
     var adapter = await BluetoothAdapter.GetDefaultAsync();
     if (adapter == null)
@@ -30,7 +35,6 @@ try
     }
     else
     {
-        bleSupported = adapter.IsPeripheralRoleSupported;
         Console.WriteLine($"RADIO FOUND: {adapter.DeviceId}");
         Console.WriteLine($"      Peripheral Mode Supported: {adapter.IsPeripheralRoleSupported}");
         Console.WriteLine($"      Central Mode Supported:    {adapter.IsCentralRoleSupported}");
@@ -45,10 +49,17 @@ catch (Exception ex)
 Console.WriteLine("\n[2/6] Teacher Authentication");
 string teacherId = "T001";
 string teacherPassword = "teach123";
-if (args.Contains("--login") && args.Length > 2)
+if (args.Contains("--login"))
 {
-    teacherId = args[1];
-    teacherPassword = args[2];
+    var loginIndex = Array.IndexOf(args, "--login");
+    if (loginIndex + 2 >= args.Length)
+    {
+        Console.WriteLine("[ERROR] --login requires a teacher ID and password.");
+        Environment.ExitCode = 1;
+        return;
+    }
+    teacherId = args[loginIndex + 1];
+    teacherPassword = args[loginIndex + 2];
 }
 
 var teacher = db.AuthenticateTeacher(teacherId, teacherPassword);
@@ -80,7 +91,7 @@ Console.WriteLine($"      Random Nonce:  {session.RandomNonce}");
 Console.WriteLine($"      Valid For:     10 minutes (Expires: {DateTimeOffset.FromUnixTimeMilliseconds(session.ExpirationTime):HH:mm:ss})");
 
 using var gattServer = new GattAttendanceServer(db);
-bool gattReady = await gattServer.InitializeAsync(session);
+bool gattReady = await gattServer.InitializeAsync(session, enableBluetooth: !simulation);
 if (gattReady)
 {
     gattServer.StartAdvertising();
@@ -90,7 +101,9 @@ else
 {
     var reason = !string.IsNullOrWhiteSpace(gattServer.InitializationError) ? gattServer.InitializationError : "Radio peripheral mode unavailable on this workstation.";
     Console.WriteLine($"      Windows BLE GATT Server: {reason}");
-    Console.WriteLine("      Running in Simulated / Hybrid Attendance Verification Mode.");
+    Console.WriteLine(simulation
+        ? "      Explicit simulation active; attendance is isolated in memory."
+        : "      BLE verification unavailable. Manual commands remain available; simulation requires --simulate.");
 }
 
 // 5. Verification Event Handlers (spec §7/§8/§11)
@@ -112,8 +125,6 @@ gattServer.OnVerificationFailed += (studentId, reason) =>
 // 6. Interactive / Automated Session Loop
 Console.WriteLine("\n[5/6] Live Attendance Session Active");
 RenderRosterTable(db, selectedClass.ClassId, session.SessionId);
-
-bool autoDemo = args.Contains("--auto-demo") || args.Contains("--test");
 
 if (autoDemo)
 {
@@ -151,11 +162,13 @@ if (autoDemo)
     Console.WriteLine($"Finalized {finalized} attendance records.");
     RenderRosterTable(db, selectedClass.ClassId, session.SessionId);
 
-    // Authenticated Cloud Sync
-    Console.WriteLine("\nAttempting Authenticated Cloud Sync to http://localhost:8000...");
-    var cloudToken = await cloudSync.LoginToCloudAsync("http://localhost:8000", teacher.TeacherId, teacherPassword);
-    var (ok, attCount, relayCount, msg) = await cloudSync.SyncAllAsync("http://localhost:8000", cloudToken);
-    Console.WriteLine($"Cloud Sync Result: {msg}");
+    Console.WriteLine("\n[SIMULATION] Cloud sync skipped. Records exist only in memory.");
+    if (finalized != 2)
+    {
+        Console.WriteLine("[ERROR] Simulation did not finalize the expected two records.");
+        Environment.ExitCode = 1;
+        return;
+    }
 
     Console.WriteLine("\n===============================================================");
     Console.WriteLine("   Automated Verification Completed Successfully.");
@@ -173,6 +186,11 @@ while (running)
     switch (input)
     {
         case "v":
+            if (!simulation)
+            {
+                Console.WriteLine("Demo verification requires --simulate; no live attendance was changed.");
+                break;
+            }
             // Demo verification
             roster = db.GetClassStudents(selectedClass.ClassId);
             var candidate = roster.FirstOrDefault(s => !db.GetSessionAttendance(session.SessionId).Any(a => a.StudentId == s.StudentId));
@@ -193,8 +211,10 @@ while (running)
         case "m":
             Console.Write("Enter Student ID to mark PRESENT: ");
             var sid = Console.ReadLine()?.Trim().ToUpper() ?? "";
-            db.RecordAttendance($"att_{Guid.NewGuid():N}", session.SessionId, sid, "PRESENT", "MANUAL", -50, 0, null);
-            Console.WriteLine($"Student {sid} manually marked PRESENT.");
+            bool recorded = db.RecordAttendance($"att_{Guid.NewGuid():N}", session.SessionId, sid, "PRESENT", "MANUAL", null, 0, null);
+            Console.WriteLine(recorded
+                ? $"Student {sid} manually marked PRESENT."
+                : $"Attendance for {sid} was not changed. Check enrollment, existing attendance, and session status.");
             RenderRosterTable(db, selectedClass.ClassId, session.SessionId);
             break;
 
@@ -235,12 +255,18 @@ while (running)
             break;
 
         case "s":
+            if (simulation)
+            {
+                Console.WriteLine("Cloud sync disabled for isolated simulation.");
+                break;
+            }
             Console.WriteLine("Syncing with cloud backend at http://localhost:8000...");
             var token = await cloudSync.LoginToCloudAsync("http://localhost:8000", teacher.TeacherId, teacherPassword);
             var res = await cloudSync.SyncAllAsync("http://localhost:8000", token);
             Console.WriteLine($"Result: {res.Message}");
             break;
 
+        case null:
         case "q":
             running = false;
             break;

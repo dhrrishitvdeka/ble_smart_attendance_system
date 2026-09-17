@@ -4,7 +4,6 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.example.attendance.R
 import com.example.attendance.crypto.CryptoUtils
 import com.example.attendance.databinding.ActivityLoginBinding
 import com.example.attendance.models.StudentProfile
@@ -83,7 +82,7 @@ class LoginActivity : AppCompatActivity() {
             )
 
             storage.saveLoggedInProfile(profile)
-            Toast.makeText(this, "Authenticated as ${profile.name}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Local profile loaded for ${profile.name}; teacher verification required", Toast.LENGTH_SHORT).show()
             navigateToMain()
         }
     }

@@ -37,6 +37,7 @@ function selectedPath() {
 async function refreshAttendance() {
   byId("attendance").replaceChildren();
   if (!byId("session-select").value) {
+    options(byId("relay"), [""], s => s, () => "Direct");
     byId("session-status").textContent = "No sessions. Ask the teacher to start one.";
     return;
   }
@@ -69,6 +70,10 @@ async function refresh() {
 async function run(action) {
   if (busy) return;
   busy = true;
+  const controls = Array.from(document.querySelectorAll("button, input, select"));
+  const disabled = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  byId("workspace").setAttribute("aria-busy", "true");
   byId("message").textContent = "Working…";
   try {
     const message = await action();
@@ -76,6 +81,8 @@ async function run(action) {
   } catch (error) {
     byId("message").textContent = error.message;
   } finally {
+    controls.forEach((control, index) => { control.disabled = disabled[index]; });
+    byId("workspace").setAttribute("aria-busy", "false");
     busy = false;
   }
 }
@@ -103,6 +110,12 @@ byId("logout").addEventListener("click", () => {
   token = null;
   identity = null;
   sessions = [];
+  byId("class-select").replaceChildren();
+  byId("session-select").replaceChildren();
+  options(byId("relay"), [""], s => s, () => "Direct");
+  byId("position").value = "near";
+  byId("identity").textContent = "";
+  byId("session-status").textContent = "";
   byId("attendance").replaceChildren();
   byId("workspace").hidden = true;
   byId("login-panel").hidden = false;

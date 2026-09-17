@@ -76,7 +76,7 @@ class ChallengeIn(BaseModel):
 
 class ProofIn(BaseModel):
     challenge_id: str = Field(min_length=32, max_length=32)
-    response: str = Field(min_length=64, max_length=64)
+    response: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 class RelayIn(BaseModel):

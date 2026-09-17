@@ -154,6 +154,12 @@ function studentHome() {
   document.querySelectorAll(".phone-page").forEach(p => p.classList.remove("active"));
   el("sp-home").classList.add("active");
 }
+function getStudentSession() {
+  if (!currentStudent) return null;
+  const available = DB.sessions.filter(s => s.status === "ACTIVE" && now() < s.expiration_time &&
+    isEnrolled(currentStudent, s.class_id));
+  return available.find(s => s.class_id === currentStudent.class_id) || available[0] || null;
+}
 function myPosition() {
   const sel = el("sim-position");
   const p = sel ? sel.value : null;
@@ -173,7 +179,7 @@ function setSimPosition(pos) {
 function toggleRelay(on) {
   const s = me();
   if (!s) return;
-  const sess = getActiveSession();
+  const sess = getStudentSession();
   if (on && !sess) {
     alert("Relay mode is only allowed during an ACTIVE attendance session.");
     if (el("relay-mode")) el("relay-mode").checked = false;
@@ -277,14 +283,14 @@ async function tryRealBLE() {
 function renderScanResult() {
   const box = el("scan-result");
   updateBleStatus();
-  const sess = getActiveSession();
+  const myself = me();
+  if (!myself) { box.innerHTML = '<div class="step fail">Not authenticated.</div>'; return; }
+  const sess = getStudentSession();
   if (!sess) {
     box.innerHTML = '<div class="step fail">✘ No active classroom session found.<br>' +
       "<small>Bluetooth is on and permissions granted (simulated), but the teacher has not started attendance.</small></div>";
     return;
   }
-  const myself = me();
-  if (!myself) { box.innerHTML = '<div class="step fail">Not authenticated.</div>'; return; }
   const enrolled = (myself.enrolled_classes && myself.enrolled_classes.length)
     ? myself.enrolled_classes
     : [myself.class_id];
@@ -395,7 +401,7 @@ async function runVerification(routeType, relayInfo, realBle) {
   }
 
   reloadDB();
-  const session = getActiveSession();
+  const session = getStudentSession();
   if (!useRealGatt) {
     if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
       done(d, false, "session not active"); return failResult("Session expired or ended. NOT VERIFIED.");
@@ -539,13 +545,13 @@ function successResult(rssi, route, via, hops) {
 function attemptRelay() {
   const myself = me();
   if (!myself) return failResult("Not authenticated — relay unavailable.");
-  const sess = getActiveSession();
+  const sess = getStudentSession();
   if (!sess) return failResult("No active session — relay unavailable.");
   // Measure each candidate once; prefer strongest (shortest reliable) route.
   const candidates = DB.students
     .filter(s =>
       s.student_id !== myself.student_id &&
-      s.class_id === myself.class_id &&          // relay must be a classmate
+      isEnrolled(s, sess.class_id) &&
       s.relay_active_for === sess.session_id)    // session-bound opt-in
     .map(s => ({ s, rssi: simulateRSSI(s.position || "near") }))
     .filter(c => c.rssi > RSSI_FLOOR)

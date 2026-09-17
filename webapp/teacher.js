@@ -137,7 +137,10 @@ function startSession() {
     status: "ACTIVE"
   };
   DB.sessions.push(activeSession);
-  DB.students.forEach(s => { s.relay_active_for = null; });   // relay only per-session
+  DB.students.forEach(s => {
+    if (!DB.sessions.some(session => session.session_id === s.relay_active_for &&
+      session.status === "ACTIVE" && now() < session.expiration_time)) s.relay_active_for = null;
+  });
   audit("SESSION_START", activeSession.session_id + " class=" + cls.class_id + " (code=" + activeSession.class_code + ") nonce=" + activeSession.random_nonce);
   saveDB();
 

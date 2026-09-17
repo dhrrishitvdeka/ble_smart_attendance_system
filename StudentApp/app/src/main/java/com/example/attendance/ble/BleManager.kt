@@ -21,7 +21,6 @@ import com.example.attendance.models.AttendanceRecord
 import com.example.attendance.models.AttendanceSession
 import com.example.attendance.models.AttendanceState
 import com.example.attendance.models.StudentProfile
-import java.util.UUID
 
 @SuppressLint("MissingPermission")
 class BleManager(
@@ -48,16 +47,19 @@ class BleManager(
     fun isBluetoothEnabled(): Boolean = bluetoothAdapter?.isEnabled == true
 
     fun startScanning() {
+        disconnect()
+        targetDevice = null
+        currentSession = null
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
-            listener.onLog("[BLE] Bluetooth adapter not enabled or unavailable. Attempting simulated beacon discovery.")
-            runSimulatedDiscovery()
+            listener.onLog("[BLE] Bluetooth adapter not enabled or unavailable.")
+            reportDiscoveryUnavailable()
             return
         }
 
         val scanner = bluetoothAdapter.bluetoothLeScanner
         if (scanner == null) {
-            listener.onLog("[BLE] LE Scanner unavailable. Running simulated beacon discovery.")
-            runSimulatedDiscovery()
+            listener.onLog("[BLE] LE Scanner unavailable.")
+            reportDiscoveryUnavailable()
             return
         }
 
@@ -79,13 +81,11 @@ class BleManager(
         isScanning = true
         scanner.startScan(listOf(filterByService, filterByMfg), settings, scanCallback)
 
-        // Safety timeout: if no physical beacon found within 6s, offer simulation option
         mainHandler.postDelayed({
             if (isScanning && targetDevice == null) {
                 stopScanning()
                 listener.onLog("[BLE] No physical teacher BLE beacon detected within scan window.")
-                listener.onLog("[BLE] Falling back to Simulated / Hybrid local session for verification.")
-                runSimulatedDiscovery()
+                reportDiscoveryUnavailable()
             }
         }, 6000)
     }
@@ -142,13 +142,13 @@ class BleManager(
 
         override fun onScanFailed(errorCode: Int) {
             listener.onLog("[BLE] Scan failed with error code: $errorCode")
-            runSimulatedDiscovery()
+            reportDiscoveryUnavailable()
         }
     }
 
     fun submitDirectGattAttendance(student: StudentProfile, device: BluetoothDevice?) {
         if (device == null) {
-            runSimulatedGattHandshake(student)
+            listener.onVerificationFailed("A physical teacher connection is required. No attendance was recorded.")
             return
         }
 
@@ -239,7 +239,7 @@ class BleManager(
                     // Compute cryptographic response: SHA256(challengeNonce + student_secret)
                     listener.onLog("[BLE] Computing cryptographic response with hardware secret...")
                     val responseHash = CryptoUtils.computeChallengeResponse(challengeNonce, student.deviceSecret)
-                    listener.onLog("[BLE] Response Hash: $responseHash")
+
 
                     val service = gatt?.getService(Protocol.SERVICE_UUID)
                     val respChar = service?.getCharacteristic(Protocol.RESPONSE_CHAR_UUID)
@@ -309,9 +309,13 @@ class BleManager(
         hopCount: Int,
         viaStudent: String?
     ) {
+        val session = currentSession ?: run {
+            listener.onVerificationFailed("No active teacher session. No attendance was recorded.")
+            return
+        }
         val record = AttendanceRecord(
             id = "att_${System.currentTimeMillis()}_${student.studentId}",
-            sessionId = currentSession?.sessionId ?: "SES_DEMO_01",
+            sessionId = session.sessionId,
             studentId = student.studentId,
             status = "ELIGIBLE",
             routeType = routeType,
@@ -331,43 +335,16 @@ class BleManager(
         }
     }
 
-    private fun runSimulatedDiscovery() {
-        val savedClassId = context.getSharedPreferences("ble_attendance_prefs", Context.MODE_PRIVATE)
-            .getString("class_id", "CSE-A") ?: "CSE-A"
-        val simulatedSession = AttendanceSession(
-            sessionId = "1957F836",
-            nonce = "2E2B9D646674CA51",
-            classId = savedClassId,
-            rssi = -62,
-            hopCount = 0,
-            viaStudent = null
-        )
-        currentSession = simulatedSession
-        listener.onLog("[SIM] Classroom beacon discovered: Session ${simulatedSession.sessionId} ($savedClassId, RSSI: -62 dBm)")
-        listener.onBeaconDiscovered(simulatedSession, null)
-    }
-
-    private fun runSimulatedGattHandshake(student: StudentProfile) {
-        listener.onStatusChanged(AttendanceState.CONNECTING, "Connecting to simulated Teacher GATT server...")
-        listener.onLog("[GATT] Connected to Teacher Authority. Requesting MTU 512...")
-
-        mainHandler.postDelayed({
-            listener.onStatusChanged(AttendanceState.CHALLENGING, "Solving cryptographic challenge...")
-            val nonce = "A74F09B1C32D8E40"
-            listener.onLog("[GATT] Received Teacher Challenge Nonce: $nonce")
-            val hash = CryptoUtils.computeChallengeResponse(nonce, student.deviceSecret)
-            listener.onLog("[GATT] Computed SHA256(Nonce + Secret): $hash")
-            listener.onLog("[GATT] Writing Response Char: ${student.studentId}|${student.registeredDeviceId}|$hash|-62")
-
-            mainHandler.postDelayed({
-                listener.onLog("[GATT] Teacher root authority confirmed cryptographic signature: OK (ELIGIBLE)")
-                completeAttendance(student, "DIRECT", -62, 0, null)
-            }, 600)
-        }, 600)
+    private fun reportDiscoveryUnavailable() {
+        stopScanning()
+        targetDevice = null
+        currentSession = null
+        listener.onVerificationFailed("No physical teacher beacon available. No attendance was recorded.")
     }
 
     fun disconnect() {
         stopScanning()
+        mainHandler.removeCallbacksAndMessages(null)
         bluetoothGatt?.disconnect()
         bluetoothGatt?.close()
         bluetoothGatt = null

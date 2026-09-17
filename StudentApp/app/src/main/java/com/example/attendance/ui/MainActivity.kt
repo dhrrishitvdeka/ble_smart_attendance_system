@@ -14,7 +14,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.attendance.Protocol
-import com.example.attendance.R
 import com.example.attendance.ble.BleManager
 import com.example.attendance.ble.RelayManager
 import com.example.attendance.databinding.ActivityMainBinding
@@ -77,7 +76,7 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener, RelayManager.R
         val p = currentProfile!!
         binding.tvStudentName.text = "${p.name} (${p.studentId})"
         binding.tvClassEnrolled.text = "Enrolled Class: ${p.classId}"
-        binding.tvDeviceBinding.text = "Device ID: ${p.registeredDeviceId} | Vault: Hardware-Bound PBKDF2"
+        binding.tvDeviceBinding.text = "Device ID: ${p.registeredDeviceId} | Local profile; teacher verification required"
 
         binding.btnJoinClass.setOnClickListener {
             val code = binding.etJoinClassCode.text?.toString()?.trim()?.uppercase() ?: ""
@@ -131,14 +130,11 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener, RelayManager.R
 
         binding.btnSubmitRelay.setOnClickListener {
             val student = currentProfile ?: return@setOnClickListener
-            val session = activeSession ?: AttendanceSession(
-                sessionId = "1957F836",
-                nonce = "SIM_NONCE",
-                classId = student.classId,
-                rssi = -74,
-                hopCount = 2,
-                viaStudent = "S002"
-            )
+            val session = activeSession
+            if (session == null) {
+                Toast.makeText(this, "Please scan classroom beacon first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             relayManager.submitMeshRelayAttendance(student, session, targetPeripheral)
         }
     }
@@ -277,7 +273,7 @@ class MainActivity : AppCompatActivity(), BleManager.BleListener, RelayManager.R
 
     override fun onDestroy() {
         super.onDestroy()
-        bleManager.disconnect()
-        relayManager.stopRelayBeaconAdvertising()
+        if (::bleManager.isInitialized) bleManager.disconnect()
+        if (::relayManager.isInitialized) relayManager.stopRelayBeaconAdvertising()
     }
 }

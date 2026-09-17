@@ -96,3 +96,44 @@ def test_demo_ui_served_and_auth_required():
     assert client.get("/webapp/demo.js").status_code == 200
     assert client.get("/api/demo/sessions").status_code == 401
     assert client.post("/api/demo/sessions", json={"class_id": "CSE-A"}).status_code == 401
+
+
+def test_demo_expired_session_can_finalize_verified_students():
+    teacher, student = login("T001"), login("S001")
+    path = new_session(teacher)
+    solve(student, path, position="back")
+    with SessionLocal() as db:
+        db.get(ClassSession, path.rsplit("/", 1)[1]).expiration_time = 1
+        db.commit()
+    result = teacher.post(path + "/finalize", json={})
+    assert result.status_code == 200
+    assert result.json() == {"status": "FINALIZED", "updated": 1}
+    assert student.get(path + "/attendance").json()[0]["status"] == "PRESENT"
+
+
+def test_seed_repairs_partial_database_without_overwriting_accounts(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from Backend import database
+    from Backend.models import Base, Teacher, Student, CourseClass, Enrollment
+    from Backend.security import hash_password, verify_password
+
+    engine = create_engine("sqlite:///" + (tmp_path / "partial.db").as_posix())
+    sessions = sessionmaker(bind=engine, autoflush=False)
+    monkeypatch.setattr(database, "engine", engine)
+    monkeypatch.setattr(database, "SessionLocal", sessions)
+    try:
+        Base.metadata.create_all(engine)
+        with sessions.begin() as db:
+            db.add(Teacher(teacher_id="T001", name="Existing teacher", password_hash=hash_password("existing")))
+        database.init_db()
+        database.init_db()
+        with sessions() as db:
+            teacher = db.get(Teacher, "T001")
+            assert teacher.name == "Existing teacher"
+            assert verify_password("existing", teacher.password_hash)
+            assert db.get(CourseClass, "CSE-A") is not None
+            assert len(db.scalars(select(Student)).all()) == 6
+            assert len(db.scalars(select(Enrollment)).all()) == 6
+    finally:
+        engine.dispose()

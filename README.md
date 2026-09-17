@@ -15,24 +15,33 @@ treated as presence.
 | :--- | :--- | :--- | :--- |
 | Local demo (start here) | `Backend/` + `webapp/demo.html` | FastAPI + browser | Working, browser-tested |
 | Legacy browser simulation | `webapp/index.html` | Vanilla JS | Working, syncs with backend |
-| Cloud sync API | `Backend/` | FastAPI / SQLAlchemy | Hardened, 44 pytest tests |
-| Teacher desktop | `TeacherApp/` | C# / .NET (Windows) | Compiles; 40 MSTest tests pass |
+| Cloud sync API | `Backend/` | FastAPI / SQLAlchemy | Authentication enforced; pytest coverage |
+| Teacher desktop | `TeacherApp/` | C# / .NET 10 (Windows) | MSTest coverage; hardware validation required |
 | Student mobile | `StudentApp/` | Android / Kotlin | Source only (see limitations) |
 | BLE relay reference | `android-relay-ble/` | Kotlin / C# | Source only (see limitations) |
 
 ## Quick start (local demo)
 
-Requires Python 3.10+.
+Requires Python 3.10+ with `venv`. Run these commands from the repository root.
 
-```bat
-start-webapp.bat
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r Backend/requirements.txt
+.\start-webapp.bat
 ```
 
-This installs nothing by itself — install dependencies once first:
+Linux/macOS:
 
-```bat
-python -m pip install -r Backend/requirements.txt
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r Backend/requirements.txt
+DATABASE_URL=sqlite:///./local_demo.db ENFORCE_AUTH=true .venv/bin/python -m uvicorn Backend.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
+
+Dependencies are downloaded during installation; after that the demo runs locally.
+GitHub Pages cannot host this Python backend; no static deployment workflow is included.
 
 Then open **http://127.0.0.1:8000** in Chrome/Edge. Use separate tabs for each
 role; every tab signs in independently against the local backend.
@@ -88,16 +97,17 @@ dotnet test TeacherApp.Tests
 dotnet run --project TeacherApp -- --auto-demo
 ```
 
-The GATT server requires a Bluetooth adapter with peripheral role support; on
-machines without one the app runs in simulated verification mode.
+Requires the .NET 10 SDK and Windows. The GATT server requires a Bluetooth
+adapter with peripheral role support. Simulation is enabled explicitly with
+`--auto-demo` or `--simulate`; missing hardware does not enable it automatically.
 
 ## Android apps
 
 `StudentApp/` and `android-relay-ble/` are source-only references in this
 repository. Building them requires the Android SDK and Gradle, which are not
-bundled. The Android BLE client falls back to a simulated handshake when no
-teacher beacon is reachable — treat its results as simulation, not proximity
-proof.
+bundled. The Android BLE client does not fabricate discovery or handshake
+success when a teacher beacon is unreachable. These reference sources are not
+validated for production attendance or hardware interoperability.
 
 ## Automated tests
 
@@ -109,7 +119,30 @@ proof.
 | Webapp JS unit regression | `node --test webapp/regression.test.cjs` |
 | Native teacher | `dotnet test TeacherApp.Tests` |
 
-CI runs the backend and webapp jobs on every push (`.github/workflows/ci.yml`).
+Install development dependencies with `python -m pip install -r requirements-dev.txt`
+and Chromium with `python -m playwright install chromium` before browser tests.
+Browser tests write data to the server selected by `DEMO_URL`; never point them
+at a real attendance database. For an isolated run, start a separate server:
+
+```powershell
+$env:DATABASE_URL = "sqlite:///./browser_test.db"
+.\.venv\Scripts\python.exe -m uvicorn Backend.main:app --host 127.0.0.1 --port 8017 --workers 1
+```
+
+In another PowerShell terminal:
+
+```powershell
+$env:DEMO_URL = "http://127.0.0.1:8017"
+.\.venv\Scripts\python.exe -m pytest webapp/test_demo_browser.py webapp/test_legacy_browser.py -q
+```
+
+Stop the server before deleting `browser_test.db`. Backend pytest runs use a
+temporary database unless `DATABASE_URL` is already set; unset it before running
+backend tests. JavaScript syntax checks use `node --check webapp/<filename>.js`.
+
+CI runs backend, JavaScript, and Windows teacher tests on pushes to `master` or
+`main` and on pull requests (`.github/workflows/ci.yml`). Browser acceptance and
+Android hardware checks are currently manual.
 
 ## How verification works
 
@@ -123,10 +156,39 @@ Any failure means `NOT VERIFIED`, never automatic absence.
 - The browser demo is a simulation; it cannot prove physical presence.
 - The Android apps are not buildable from this repository alone (no Gradle
   wrapper or SDK) and have not been verified on hardware in this state.
+- Native credential provisioning and relay transport are incomplete. Android
+  demo secrets are not provisioned from the teacher database; relay references
+  do not provide a complete end-to-end forwarding implementation.
+- Native credential storage, callback threading, and device-specific Bluetooth
+  behavior require further engineering and review before real deployment.
 - The legacy webapp keeps verification state in browser localStorage; the
   backend-backed demo is the authoritative workflow.
 - RSSI is evidence, not distance. Relay forwarding proves connectivity, never
   presence.
+
+## Contributing
+
+Open an issue describing the problem or proposed change before a large rewrite.
+Keep pull requests focused, include regression tests, and run the relevant suites
+above. Document hardware and SDK versions for native changes. Do not commit local
+databases, credentials, device keys, build outputs, or real student records.
+
+## Security and privacy
+
+This project is an educational prototype, not a production attendance service.
+Demo accounts are seeded automatically with public passwords. Do not expose an
+unmodified instance to the Internet or use it with real student data. A deployment
+requires removal of demo accounts, HTTPS, a strong `JWT_SECRET`, restricted CORS,
+and an independent review of authorization, retention, and consent requirements.
+
+Older revisions used a public fallback JWT signing key. Rotate that key and
+invalidate existing tokens if any deployment used it. Current versions generate
+a runtime secret when `JWT_SECRET` is unset. Native sync trusts authenticated
+teachers for unknown session IDs; it does not independently attest BLE proximity.
+
+Report vulnerabilities privately through GitHub's private vulnerability reporting
+feature if enabled. Do not post credentials, personal data, or sensitive details
+in public issues; request a private contact channel instead.
 
 ## License
 

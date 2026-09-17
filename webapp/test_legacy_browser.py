@@ -1,7 +1,7 @@
 import os
 import uuid
 
-BASE_URL = os.environ.get("DEMO_URL", "http://127.0.0.1:8765")
+BASE_URL = os.environ.get("DEMO_URL", "http://127.0.0.1:8000")
 from playwright.sync_api import sync_playwright, expect
 
 
@@ -11,7 +11,7 @@ def test_legacy_same_origin_sync():
         page = browser.new_page()
         requests = []
         page.on("request", lambda req: requests.append(req.url) if "/api/" in req.url else None)
-        page.goto("http://127.0.0.1:8765/webapp/index.html")
+        page.goto(BASE_URL + "/webapp/index.html")
         page.wait_for_function("typeof DB !== 'undefined' && DB && DB.teachers.length > 0")
         page.evaluate("document.getElementById('t-id').value='T001'; document.getElementById('t-pass').value='teach123'")
         page.evaluate("teacherLogin()")
@@ -26,7 +26,7 @@ def test_legacy_same_origin_sync():
         page.evaluate("syncToCloud()")
         expect(page.locator("#sync-log")).to_contain_text("stored=1")
         assert page.evaluate("id => DB.attendance.find(a => a.attendance_id === id).synced", attendance_id)
-        assert requests and all(url.startswith("http://127.0.0.1:8765/") for url in requests)
+        assert requests and all(url.startswith(BASE_URL + "/") for url in requests)
         browser.close()
 
 
