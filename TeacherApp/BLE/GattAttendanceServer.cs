@@ -353,6 +353,15 @@ public class GattAttendanceServer : IDisposable
 
     public bool VerifyAndCommit(string studentId, string deviceId, string responseHash, string routeType, int rssi, int hopCount, string? viaStudent)
     {
+        lock (_db.SyncRoot)
+        {
+            if (_currentSession != null) _currentSession = _db.GetSession(_currentSession.SessionId);
+            return VerifyAndCommitCore(studentId, deviceId, responseHash, routeType, rssi, hopCount, viaStudent);
+        }
+    }
+
+    private bool VerifyAndCommitCore(string studentId, string deviceId, string responseHash, string routeType, int rssi, int hopCount, string? viaStudent)
+    {
         if (_currentSession == null || _currentSession.Status != "ACTIVE")
         {
             FailStudent(studentId, "Session not active.");

@@ -614,6 +614,28 @@ public class AttendanceVerificationTests
     }
 
     [TestMethod]
+    public void TestFinalizationLifecycle_RejectsWrongTeacherAndLateAttendance()
+    {
+        using var server = new GattAttendanceServer(_db);
+        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        Assert.IsTrue(_db.RecordAttendance("lifecycle", _session.SessionId, "S001", "ELIGIBLE", "DIRECT", -60, 0, null));
+        _db.MarkAttendanceSynced("lifecycle");
+
+        Assert.AreEqual(0, _db.FinalizeAttendance(_session.SessionId, "T999"));
+        Assert.AreEqual("ACTIVE", _db.GetSession(_session.SessionId)!.Status);
+        Assert.AreEqual(1, _db.FinalizeAttendance(_session.SessionId, "T001"));
+        Assert.AreEqual("FINALIZED", _db.GetSession(_session.SessionId)!.Status);
+        Assert.HasCount(1, _db.GetUnsyncedAttendance());
+
+        var student = _db.GetStudent("S002")!;
+        server.RegisterChallengeForTest(student.StudentId, "LIFECYCLE_NONCE");
+        Assert.IsFalse(server.VerifyAndCommit(student.StudentId, student.RegisteredDeviceId,
+            ComputeHash("LIFECYCLE_NONCE" + student.DeviceSecret), "DIRECT", -60, 0, null));
+        Assert.HasCount(1, _db.GetSessionAttendance(_session.SessionId));
+        Assert.AreEqual("PRESENT", _db.GetSessionAttendance(_session.SessionId)[0].VerificationStatus);
+    }
+
+    [TestMethod]
     public void TestTeacherAuthentication_BackdoorRemoved()
     {
         // Insert teacher with distinct password
