@@ -37,7 +37,8 @@ Linux/macOS:
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r Backend/requirements.txt
-DATABASE_URL=sqlite:///./local_demo.db ENFORCE_AUTH=true .venv/bin/python -m uvicorn Backend.main:app --host 127.0.0.1 --port 8000 --workers 1
+chmod +x start-webapp.sh
+./start-webapp.sh
 ```
 
 Dependencies are downloaded during installation; after that the demo runs locally.
@@ -113,16 +114,15 @@ validated for production attendance or hardware interoperability.
 
 | Suite | Command |
 | :--- | :--- |
+| Full test suite (Backend, e2e, browser acceptance) | `pytest -q` (auto-serves background test instance) |
 | Backend API + demo workflow | `pytest Backend/tests tests_e2e_integration.py -q` |
-| Browser acceptance (5 tabs) | `python -m pytest webapp/test_demo_browser.py -q` (needs `pip install playwright` + `python -m playwright install chromium`, server running) |
-| Legacy browser sync | `python -m pytest webapp/test_legacy_browser.py -q` |
 | Webapp JS unit regression | `node --test webapp/regression.test.cjs` |
-| Native teacher | `dotnet test TeacherApp.Tests` |
+| Native teacher (.NET) | `dotnet test TeacherApp.Tests` |
 
 Install development dependencies with `python -m pip install -r requirements-dev.txt`
 and Chromium with `python -m playwright install chromium` before browser tests.
-Browser tests write data to the server selected by `DEMO_URL`; never point them
-at a real attendance database. For an isolated run, start a separate server:
+Browser tests automatically spin up an isolated background test server on a temporary database
+when run via `pytest`. For manual isolated runs:
 
 ```powershell
 $env:DATABASE_URL = "sqlite:///./browser_test.db"
