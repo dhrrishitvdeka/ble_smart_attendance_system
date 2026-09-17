@@ -80,7 +80,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_VerificationSuccess()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "0123456789ABCDEF0123456789ABCDEF";
@@ -103,7 +103,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_UnregisteredDeviceRejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "AABBCCDDEEFF00112233445566778899";
@@ -119,7 +119,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_WeakRssiRejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "112233445566778899AABBCCDDEEFF00";
@@ -135,7 +135,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_CryptographicMismatchRejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "FEDCBA9876543210FEDCBA9876543210";
@@ -151,7 +151,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_ReplayAttackPrevented()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "CAFEBABEDEADBEEFCAFEBABEDEADBEEF";
@@ -172,7 +172,7 @@ public class AttendanceVerificationTests
     public void TestRelayAttendance_MultiHopSuccess()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s3 = _db.GetStudent("S003")!;
         string challengeNonce = "00112233445566778899AABBCCDDEEFF";
@@ -196,7 +196,7 @@ public class AttendanceVerificationTests
     public void TestRelayAttendance_HopLimitExceededRejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s3 = _db.GetStudent("S003")!;
         string challengeNonce = "12345678901234567890123456789012";
@@ -290,7 +290,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_WrongClassEnrollmentRejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         // Create student in CSE-B
         _db.AddStudent("S999", "Other Class Student", "s999@college.edu", "DEV-S999", "SECRET999", "CSE-B");
@@ -308,7 +308,7 @@ public class AttendanceVerificationTests
     public void TestDirectAttendance_ExpiredChallengeRejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "EXPIRED_NONCE_123456789012345678";
@@ -327,7 +327,7 @@ public class AttendanceVerificationTests
         // Session with EXPIRED status
         var inactiveSession = new SessionRecord("SES_INACTIVE", "CSE-A", "T001", "Data Structures", 1000, 2000, "NONCE", "EXPIRED");
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(inactiveSession).GetAwaiter().GetResult();
+        server.InitializeAsync(inactiveSession, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string challengeNonce = "NONCE_FOR_INACTIVE_SESSION";
@@ -449,7 +449,7 @@ public class AttendanceVerificationTests
         // 3. Session Initialization & GATT Server
         var session = _db.CreateSession(selectedClass.ClassId, teacher.TeacherId, selectedClass.Subject);
         using var gattServer = new GattAttendanceServer(_db);
-        await gattServer.InitializeAsync(session);
+        await gattServer.InitializeAsync(session, enableBluetooth: false);
 
         // 4. Direct check-in for S001
         var s1 = _db.GetStudent("S001")!;
@@ -497,7 +497,7 @@ public class AttendanceVerificationTests
     public void TestCrossStudentResultIsolation()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         var s2 = _db.GetStudent("S002")!;
@@ -525,7 +525,7 @@ public class AttendanceVerificationTests
     public void TestDuplicateAttendanceSubmission_Rejected()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string nonce = "FIRST_ATTEMPT_NONCE_00000000000";
@@ -551,7 +551,7 @@ public class AttendanceVerificationTests
     public void TestDuplicateAttendanceSubmission_PresentNotDowngraded()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         _db.RecordAttendance("att_p1", _session.SessionId, s1.StudentId, "PRESENT", "DIRECT", -60, 0, null);
@@ -568,6 +568,71 @@ public class AttendanceVerificationTests
         var records = _db.GetSessionAttendance(_session.SessionId);
         var rec = records.First(r => r.StudentId == s1.StudentId);
         Assert.AreEqual("PRESENT", rec.VerificationStatus, "Finalized PRESENT attendance must never be downgraded back to ELIGIBLE.");
+    }
+
+    [TestMethod]
+    public void TestDirectAttendance_ExpiredSessionTimeRejected()
+    {
+        // Session record whose status is ACTIVE but expiration time has passed
+        long past = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1000;
+        var expiredSession = new SessionRecord("SES_TIME_EXPIRED", "CSE-A", "T001", "Data Structures", past - 1000, past, "NONCE", "ACTIVE");
+        using var server = new GattAttendanceServer(_db);
+        server.InitializeAsync(expiredSession, enableBluetooth: false).GetAwaiter().GetResult();
+
+        var s1 = _db.GetStudent("S001")!;
+        string nonce = "NONCE_EXPIRED_TIME_TEST_0000000";
+        server.RegisterChallengeForTest(s1.StudentId, nonce);
+        string hash = ComputeHash(nonce + s1.DeviceSecret);
+
+        bool verified = server.VerifyAndCommit(s1.StudentId, s1.RegisteredDeviceId, hash, "DIRECT", -60, 0, null);
+        Assert.IsFalse(verified, "Attendance must be rejected when the session expiration time has passed even if status is still ACTIVE.");
+    }
+
+    [TestMethod]
+    public void TestRecordAttendance_DoesNotOverwriteExistingRecord()
+    {
+        bool first = _db.RecordAttendance("att_keep", _session.SessionId, "S001", "PRESENT", "MANUAL", -50, 0, null);
+        Assert.IsTrue(first);
+
+        // A second submission with the same session+student must NOT replace the PRESENT record
+        bool second = _db.RecordAttendance("att_other_id", _session.SessionId, "S001", "ELIGIBLE", "RELAY", -80, 2, "S002");
+        Assert.IsFalse(second, "Second attendance write for the same session+student must not succeed.");
+
+        var records = _db.GetSessionAttendance(_session.SessionId);
+        Assert.HasCount(1, records);
+        Assert.AreEqual("PRESENT", records[0].VerificationStatus, "Existing record must never be downgraded or replaced.");
+        Assert.AreEqual("att_keep", records[0].AttendanceId);
+    }
+
+    [TestMethod]
+    public void TestRecordAttendance_RejectsInvalidStatusAndRoute()
+    {
+        Assert.IsFalse(_db.RecordAttendance("att_bad1", _session.SessionId, "S001", "FORGED", "DIRECT", -60, 0, null));
+        Assert.IsFalse(_db.RecordAttendance("att_bad2", _session.SessionId, "S001", "ELIGIBLE", "WORMHOLE", -60, 0, null));
+        Assert.IsFalse(_db.RecordAttendance("", _session.SessionId, "S001", "ELIGIBLE", "DIRECT", -60, 0, null));
+        Assert.IsEmpty(_db.GetSessionAttendance(_session.SessionId));
+    }
+
+    [TestMethod]
+    public void TestFinalizationLifecycle_RejectsWrongTeacherAndLateAttendance()
+    {
+        using var server = new GattAttendanceServer(_db);
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
+        Assert.IsTrue(_db.RecordAttendance("lifecycle", _session.SessionId, "S001", "ELIGIBLE", "DIRECT", -60, 0, null));
+        _db.MarkAttendanceSynced("lifecycle");
+
+        Assert.AreEqual(0, _db.FinalizeAttendance(_session.SessionId, "T999"));
+        Assert.AreEqual("ACTIVE", _db.GetSession(_session.SessionId)!.Status);
+        Assert.AreEqual(1, _db.FinalizeAttendance(_session.SessionId, "T001"));
+        Assert.AreEqual("FINALIZED", _db.GetSession(_session.SessionId)!.Status);
+        Assert.HasCount(1, _db.GetUnsyncedAttendance());
+
+        var student = _db.GetStudent("S002")!;
+        server.RegisterChallengeForTest(student.StudentId, "LIFECYCLE_NONCE");
+        Assert.IsFalse(server.VerifyAndCommit(student.StudentId, student.RegisteredDeviceId,
+            ComputeHash("LIFECYCLE_NONCE" + student.DeviceSecret), "DIRECT", -60, 0, null));
+        Assert.HasCount(1, _db.GetSessionAttendance(_session.SessionId));
+        Assert.AreEqual("PRESENT", _db.GetSessionAttendance(_session.SessionId)[0].VerificationStatus);
     }
 
     [TestMethod]
@@ -595,7 +660,7 @@ public class AttendanceVerificationTests
     public void TestVerificationFailure_LogsAudit()
     {
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(_session).GetAwaiter().GetResult();
+        server.InitializeAsync(_session, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string nonce = "AUDIT_FAILURE_TEST_NONCE_123456";
@@ -683,7 +748,7 @@ public class AttendanceVerificationTests
         var distSession = _db.CreateSession("CSE-DIST", "T001", "Cloud Computing");
 
         using var server = new GattAttendanceServer(_db);
-        server.InitializeAsync(distSession).GetAwaiter().GetResult();
+        server.InitializeAsync(distSession, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s2 = _db.GetStudent("S002")!;
         Assert.AreEqual("CSE-A", s2.ClassId);
@@ -751,7 +816,7 @@ public class AttendanceVerificationTests
         // 4. S001 can successfully verify in BOTH CSE-A and CSE-MULTI sessions
         var cseaSession = _db.CreateSession("CSE-A", "T001", "Data Structures");
         using var cseaServer = new GattAttendanceServer(_db);
-        cseaServer.InitializeAsync(cseaSession).GetAwaiter().GetResult();
+        cseaServer.InitializeAsync(cseaSession, enableBluetooth: false).GetAwaiter().GetResult();
 
         var s1 = _db.GetStudent("S001")!;
         string nonceCsea = "NONCE_CSEA_MULTI_TEST";
@@ -762,7 +827,7 @@ public class AttendanceVerificationTests
 
         var multiSession = _db.CreateSession("CSE-MULTI", "T001", "Operating Systems");
         using var multiServer = new GattAttendanceServer(_db);
-        multiServer.InitializeAsync(multiSession).GetAwaiter().GetResult();
+        multiServer.InitializeAsync(multiSession, enableBluetooth: false).GetAwaiter().GetResult();
 
         string nonceMulti = "NONCE_MULTI_SESSION_TEST";
         multiServer.RegisterChallengeForTest(s1.StudentId, nonceMulti);

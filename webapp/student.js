@@ -6,6 +6,7 @@
 
 let currentStudent = null;          // logged-in student record
 let authCtx = null;                 // { deviceId } from login session
+let studentSessionPassword = null;
 let currentChallenge = null;        // { value, expiresAt, used }
 let scanTimer = null;
 let scanTimeout = null;
@@ -26,6 +27,8 @@ async function studentLogin() {
   }
   msg.textContent = ""; msg.className = "msg";
   currentStudent = s;
+  studentSessionPassword = val("st-pass");
+  cloudAuth.delete("student:" + s.student_id);
   // Authenticated session carries the registered device & isolated secret
   const secret = (DB.student_secrets && DB.student_secrets[s.student_id]) || "";
   authCtx = { deviceId: s.registered_device_id, deviceSecret: secret };
@@ -72,7 +75,7 @@ async function joinClassByCode() {
 
   if (!cls) {
     try {
-      const resp = await fetch("http://localhost:8000/api/classes/code/" + encodeURIComponent(code));
+      const resp = await fetch(apiUrl("/api/classes/code/" + encodeURIComponent(code)));
       if (resp.ok) {
         const remoteClass = await resp.json();
         if (!DB.classes.some(c => c.class_id === remoteClass.class_id)) {
@@ -97,12 +100,6 @@ async function joinClassByCode() {
   }
 
   student.enrolled_classes = student.enrolled_classes || (student.class_id ? [student.class_id] : []);
-  const alreadyEnrolled = student.class_id === cls.class_id || student.enrolled_classes.includes(cls.class_id);
-  if (alreadyEnrolled) {
-    msg.textContent = "You are already enrolled in class " + esc(cls.class_id) + " (" + esc(cls.subject) + ").";
-    msg.className = "msg ok";
-    return;
-  }
 
   if (!student.enrolled_classes.includes(cls.class_id)) {
     student.enrolled_classes.push(cls.class_id);
@@ -123,25 +120,32 @@ async function joinClassByCode() {
   audit("STUDENT_JOIN_CLASS", student.student_id + " joined " + cls.class_id + " via code " + code);
 
   try {
-    const headers = { "Content-Type": "application/json" };
-    if (student.cloudToken) {
-      headers["Authorization"] = "Bearer " + student.cloudToken;
-    }
-    fetch("http://localhost:8000/api/classes/join", {
+    const headers = await cloudHeaders(student.student_id, studentSessionPassword, "student");
+    const response = await fetch(apiUrl("/api/classes/join"), {
       method: "POST",
       headers,
       body: JSON.stringify({ student_id: student.student_id, class_code: code })
-    }).catch(() => {});
-  } catch (_) {}
+    });
+    if (!response.ok) {
+      if (response.status === 401) cloudAuth.delete("student:" + student.student_id);
+      throw new Error("Backend rejected enrollment (HTTP " + response.status + ").");
+    }
+    msg.textContent = "Joined " + cls.class_name + " locally and in the backend.";
+  } catch (syncError) {
+    msg.textContent = "Local simulation enrollment only. Backend enrollment failed: " + syncError.message;
+    msg.className = "msg warn";
+    audit("CLOUD_JOIN_SKIPPED", student.student_id + " " + syncError.message);
+  }
 }
 function studentLogout() {
   reloadDB();
   if (currentStudent) {
+    cloudAuth.delete("student:" + currentStudent.student_id);
     const s = DB.students.find(x => x.student_id === currentStudent.student_id);
     if (s) s.relay_active_for = null;
     saveDB();
   }
-  currentStudent = null; authCtx = null;
+  currentStudent = null; authCtx = null; studentSessionPassword = null;
   stopScan();
   showScreen("screen-role");
 }
@@ -149,6 +153,12 @@ function studentHome() {
   stopScan();
   document.querySelectorAll(".phone-page").forEach(p => p.classList.remove("active"));
   el("sp-home").classList.add("active");
+}
+function getStudentSession() {
+  if (!currentStudent) return null;
+  const available = DB.sessions.filter(s => s.status === "ACTIVE" && now() < s.expiration_time &&
+    isEnrolled(currentStudent, s.class_id));
+  return available.find(s => s.class_id === currentStudent.class_id) || available[0] || null;
 }
 function myPosition() {
   const sel = el("sim-position");
@@ -169,7 +179,7 @@ function setSimPosition(pos) {
 function toggleRelay(on) {
   const s = me();
   if (!s) return;
-  const sess = getActiveSession();
+  const sess = getStudentSession();
   if (on && !sess) {
     alert("Relay mode is only allowed during an ACTIVE attendance session.");
     if (el("relay-mode")) el("relay-mode").checked = false;
@@ -273,14 +283,14 @@ async function tryRealBLE() {
 function renderScanResult() {
   const box = el("scan-result");
   updateBleStatus();
-  const sess = getActiveSession();
+  const myself = me();
+  if (!myself) { box.innerHTML = '<div class="step fail">Not authenticated.</div>'; return; }
+  const sess = getStudentSession();
   if (!sess) {
     box.innerHTML = '<div class="step fail">✘ No active classroom session found.<br>' +
       "<small>Bluetooth is on and permissions granted (simulated), but the teacher has not started attendance.</small></div>";
     return;
   }
-  const myself = me();
-  if (!myself) { box.innerHTML = '<div class="step fail">Not authenticated.</div>'; return; }
   const enrolled = (myself.enrolled_classes && myself.enrolled_classes.length)
     ? myself.enrolled_classes
     : [myself.class_id];
@@ -391,7 +401,7 @@ async function runVerification(routeType, relayInfo, realBle) {
   }
 
   reloadDB();
-  const session = getActiveSession();
+  const session = getStudentSession();
   if (!useRealGatt) {
     if (!session || session.status !== "ACTIVE" || now() >= session.expiration_time) {
       done(d, false, "session not active"); return failResult("Session expired or ended. NOT VERIFIED.");
@@ -535,13 +545,13 @@ function successResult(rssi, route, via, hops) {
 function attemptRelay() {
   const myself = me();
   if (!myself) return failResult("Not authenticated — relay unavailable.");
-  const sess = getActiveSession();
+  const sess = getStudentSession();
   if (!sess) return failResult("No active session — relay unavailable.");
   // Measure each candidate once; prefer strongest (shortest reliable) route.
   const candidates = DB.students
     .filter(s =>
       s.student_id !== myself.student_id &&
-      s.class_id === myself.class_id &&          // relay must be a classmate
+      isEnrolled(s, sess.class_id) &&
       s.relay_active_for === sess.session_id)    // session-bound opt-in
     .map(s => ({ s, rssi: simulateRSSI(s.position || "near") }))
     .filter(c => c.rssi > RSSI_FLOOR)

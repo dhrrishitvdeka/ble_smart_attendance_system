@@ -1,25 +1,41 @@
 """FastAPI cloud sync endpoint (spec §20). Idempotent on attendance_id with JWT authentication & role enforcement."""
 import os
+import secrets
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import func, select
 import jwt
 
 from .database import SessionLocal, init_db
-from .models import Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent, Enrollment
+from .models import Administrator, Attendance, Teacher, Student, CourseClass, ClassSession, AuditLog, RelayEvent, Enrollment
+from .security import hash_password, verify_password
 
 init_db()
 
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-attendance-key-with-at-least-32-bytes-length!")
+JWT_SECRET = os.getenv("JWT_SECRET") or secrets.token_urlsafe(48)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_SECONDS = 3600 * 24  # 24 hours
-ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "false").lower() in ("true", "1")
+ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "true").lower() in ("true", "1")
+
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()
+]
+
+MAX_BATCH_SIZE = 500
+ATTENDANCE_ID_MAX = 64
+SESSION_ID_MAX = 64
+STUDENT_ID_MAX = 32
+TIMESTAMP_MIN = 0
+TIMESTAMP_MAX = 4102444800000  # 2100-01-01
+RSSI_MIN, RSSI_MAX = -127, 0
+HOP_MAX = 2
 
 
 @asynccontextmanager
@@ -32,10 +48,10 @@ app = FastAPI(title="BLE Attendance Cloud Sync", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -56,11 +72,16 @@ def create_access_token(data: dict, expires_in: int = JWT_EXPIRATION_SECONDS) ->
 
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"require": ["exp", "iat", "sub", "role"]})
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has expired")
     except jwt.PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if not isinstance(claims.get("sub"), str) or not claims["sub"].strip():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if claims.get("role") not in ("student", "teacher", "admin"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    return claims
 
 
 def get_auth_context(authorization: Optional[str] = Header(None)) -> Optional[dict]:
@@ -121,16 +142,16 @@ class LoginResponse(BaseModel):
 
 
 class AttendanceIn(BaseModel):
-    attendance_id: str
-    session_id: str
-    student_id: str
-    timestamp: int
+    attendance_id: str = Field(min_length=1, max_length=ATTENDANCE_ID_MAX)
+    session_id: str = Field(min_length=1, max_length=SESSION_ID_MAX)
+    student_id: str = Field(min_length=1, max_length=STUDENT_ID_MAX)
+    timestamp: int = Field(ge=TIMESTAMP_MIN, le=TIMESTAMP_MAX)
     verification_status: str
     route_type: str = "DIRECT"
-    rssi_evidence: int | None = None
-    hop_count: int = 0
-    via_student: str | None = None
-    teacher_signature: str | None = None
+    rssi_evidence: int | None = Field(default=None, ge=RSSI_MIN, le=RSSI_MAX)
+    hop_count: int = Field(default=0, ge=0, le=HOP_MAX)
+    via_student: str | None = Field(default=None, max_length=128)
+    teacher_signature: str | None = Field(default=None, max_length=256)
 
 
 class ClassCreate(BaseModel):
@@ -154,43 +175,61 @@ def health():
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     u = req.username.strip().upper()
-    p = req.password.strip()
+    p = req.password
 
-    # Pre-seeded credentials check
-    if u == "A001" and p == "admin123":
+    admin = db.get(Administrator, u)
+    if admin and verify_password(p, admin.password_hash):
         token = create_access_token({"sub": u, "role": "admin"})
         return LoginResponse(access_token=token, user_id=u, role="admin")
-    if u == "T001" and p == "teach123":
-        token = create_access_token({"sub": u, "role": "teacher"})
-        return LoginResponse(access_token=token, user_id=u, role="teacher")
-    if u.startswith("S00") and p == "stud123":
-        token = create_access_token({"sub": u, "role": "student"})
-        return LoginResponse(access_token=token, user_id=u, role="student")
 
-    # DB lookup
     t = db.get(Teacher, u)
-    if t and (p == "teach123" or t.password_hash == p):
+    if t and verify_password(p, t.password_hash):
         token = create_access_token({"sub": u, "role": "teacher"})
         return LoginResponse(access_token=token, user_id=u, role="teacher")
 
     s = db.get(Student, u)
-    if s and (p == "stud123" or s.password_hash == p):
+    if s and verify_password(p, s.password_hash):
         token = create_access_token({"sub": u, "role": "student"})
         return LoginResponse(access_token=token, user_id=u, role="student")
 
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
 
+def authorize_session(db: Session, session_id: str, user: dict):
+    session = db.get(ClassSession, session_id)
+    if session is None or user["role"] == "admin":
+        return
+    if user["role"] == "teacher":
+        if session.teacher_id != user["sub"]:
+            raise HTTPException(403, "Session belongs to another teacher")
+    else:
+        student = db.get(Student, user["sub"])
+        enrolled = session.class_id and student and (
+            student.class_id == session.class_id or db.scalar(
+                select(Enrollment.enrollment_id).where(
+                    Enrollment.student_id == user["sub"], Enrollment.class_id == session.class_id
+                )
+            )
+        )
+        if not enrolled:
+            raise HTTPException(403, "Not enrolled in this class")
+
+
+def validate_attendance(item: AttendanceIn, user: dict, db: Session):
+    if item.session_id.startswith("demo_"):
+        raise HTTPException(409, "Demo records must use the demo verification workflow")
+    if item.route_type not in ("DIRECT", "RELAY", "MANUAL") or item.verification_status not in ("ELIGIBLE", "PRESENT", "NOT_VERIFIED"):
+        raise HTTPException(400, "Invalid attendance route or status")
+    authorize_session(db, item.session_id, user)
+
+
 @app.post("/api/attendance")
 def sync_attendance(
     item: AttendanceIn,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    if item.route_type not in ("DIRECT", "RELAY"):
-        raise HTTPException(400, "route_type must be DIRECT or RELAY")
-    if auth and auth.get("role") not in ("teacher", "admin"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Student tokens cannot submit attendance directly")
+    validate_attendance(item, auth, db)
 
     existing = db.get(Attendance, item.attendance_id)
     if existing:
@@ -203,18 +242,20 @@ def sync_attendance(
 @app.post("/api/attendance/batch")
 def sync_batch(
     items: list[AttendanceIn],
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    if auth and auth.get("role") not in ("teacher", "admin"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Teacher role required for batch attendance sync")
-
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(413, "Batch exceeds 500 records")
+    for item in items:
+        validate_attendance(item, auth, db)
     stored, ignored = 0, 0
     for item in items:
         if db.get(Attendance, item.attendance_id):
             ignored += 1
             continue
         db.add(Attendance(**item.model_dump(), synced=True))
+        db.flush()
         stored += 1
     db.commit()
     return {"stored": stored, "duplicates_ignored": ignored}
@@ -223,9 +264,10 @@ def sync_batch(
 @app.get("/api/attendance/{session_id}")
 def list_session(
     session_id: str,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    authorize_session(db, session_id, auth)
     # If authenticated as student, restrict view to only their own attendance record
     if auth and auth.get("role") == "student":
         student_id = auth.get("sub")
@@ -255,8 +297,7 @@ def sync_attendance_v2(
     teacher: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    if item.route_type not in ("DIRECT", "RELAY"):
-        raise HTTPException(400, "route_type must be DIRECT or RELAY")
+    validate_attendance(item, teacher, db)
     existing = db.get(Attendance, item.attendance_id)
     if existing:
         return {"status": "duplicate_ignored", "attendance_id": item.attendance_id}
@@ -271,12 +312,17 @@ def sync_batch_v2(
     teacher: dict = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(413, "Batch exceeds 500 records")
+    for item in items:
+        validate_attendance(item, teacher, db)
     stored, ignored = 0, 0
     for item in items:
         if db.get(Attendance, item.attendance_id):
             ignored += 1
             continue
         db.add(Attendance(**item.model_dump(), synced=True))
+        db.flush()
         stored += 1
     db.commit()
     return {"stored": stored, "duplicates_ignored": ignored, "verified_by": teacher["sub"]}
@@ -288,6 +334,7 @@ def list_session_v2(
     user: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    authorize_session(db, session_id, user)
     if user["role"] == "student":
         rows = db.scalars(
             select(Attendance)
@@ -309,24 +356,32 @@ def list_session_v2(
 
 
 class RelayEventIn(BaseModel):
-    event_id: str
-    session_id: str
-    message_id: str
-    source_student_id: str
-    relay_student_id: str
-    hop_count: int = 1
-    timestamp: int
-    status: str = "FORWARDED"
+    event_id: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=SESSION_ID_MAX)
+    message_id: str = Field(min_length=1, max_length=64)
+    source_student_id: str = Field(min_length=1, max_length=STUDENT_ID_MAX)
+    relay_student_id: str = Field(min_length=1, max_length=STUDENT_ID_MAX)
+    hop_count: int = Field(default=1, ge=0, le=HOP_MAX)
+    timestamp: int = Field(ge=TIMESTAMP_MIN, le=TIMESTAMP_MAX)
+    status: str = Field(default="FORWARDED", min_length=1, max_length=32)
+
+
+def validate_relay_event(item: RelayEventIn, user: dict, db: Session):
+    authorize_session(db, item.session_id, user)
+    if user["role"] == "student" and user["sub"] not in (item.source_student_id, item.relay_student_id):
+        raise HTTPException(403, "Students may only submit their own relay events")
 
 
 @app.post("/api/relay-events")
 def sync_relay_event(
     item: RelayEventIn,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    validate_relay_event(item, auth, db)
     existing = db.get(RelayEvent, item.event_id)
     if existing:
+        validate_relay_event(existing, auth, db)
         return {"status": "duplicate_ignored", "event_id": item.event_id}
     db.add(RelayEvent(**item.model_dump()))
     db.commit()
@@ -336,14 +391,24 @@ def sync_relay_event(
 @app.post("/api/relay-events/batch")
 def sync_relay_batch(
     items: list[RelayEventIn],
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(413, "Batch exceeds 500 records")
     stored, ignored = 0, 0
+    seen: set[str] = set()
     for item in items:
-        if db.get(RelayEvent, item.event_id):
+        validate_relay_event(item, auth, db)
+    for item in items:
+        existing = db.get(RelayEvent, item.event_id)
+        if existing or item.event_id in seen:
+            if existing:
+                validate_relay_event(existing, auth, db)
+            seen.add(item.event_id)
             ignored += 1
             continue
+        seen.add(item.event_id)
         db.add(RelayEvent(**item.model_dump()))
         stored += 1
     db.commit()
@@ -353,10 +418,11 @@ def sync_relay_batch(
 @app.get("/api/relay-events/{session_id}")
 def list_session_relay_events(
     session_id: str,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    if auth and auth.get("role") == "student":
+    authorize_session(db, session_id, auth)
+    if auth.get("role") == "student":
         sid = auth.get("sub")
         rows = db.scalars(
             select(RelayEvent)
@@ -387,8 +453,10 @@ def sync_relay_event_v2(
     user: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    validate_relay_event(item, user, db)
     existing = db.get(RelayEvent, item.event_id)
     if existing:
+        validate_relay_event(existing, user, db)
         return {"status": "duplicate_ignored", "event_id": item.event_id}
     db.add(RelayEvent(**item.model_dump()))
     db.commit()
@@ -401,11 +469,21 @@ def sync_relay_batch_v2(
     user: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    stored, ignored = 0, 0
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(413, "Batch exceeds 500 records")
     for item in items:
-        if db.get(RelayEvent, item.event_id):
+        validate_relay_event(item, user, db)
+    stored, ignored = 0, 0
+    seen: set[str] = set()
+    for item in items:
+        existing = db.get(RelayEvent, item.event_id)
+        if existing or item.event_id in seen:
+            if existing:
+                validate_relay_event(existing, user, db)
+            seen.add(item.event_id)
             ignored += 1
             continue
+        seen.add(item.event_id)
         db.add(RelayEvent(**item.model_dump()))
         stored += 1
     db.commit()
@@ -418,6 +496,7 @@ def list_session_relay_events_v2(
     user: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    authorize_session(db, session_id, user)
     if user["role"] == "student":
         sid = user["sub"]
         rows = db.scalars(
@@ -443,6 +522,17 @@ def list_session_relay_events_v2(
     ]
 
 
+def find_class_by_code(db: Session, code: str) -> CourseClass | None:
+    if not code:
+        return None
+    return db.scalars(
+        select(CourseClass).where(
+            (func.upper(CourseClass.class_code) == code.upper())
+            | (func.upper(CourseClass.class_id) == code.upper())
+        )
+    ).first()
+
+
 @app.get("/api/classes")
 def list_classes(db: Session = Depends(get_db)):
     rows = db.scalars(select(CourseClass)).all()
@@ -461,7 +551,7 @@ def list_classes(db: Session = Depends(get_db)):
 @app.post("/api/classes")
 def create_class(
     item: ClassCreate,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
     if auth:
@@ -503,19 +593,21 @@ def create_class(
         teacher = db.get(Teacher, tid)
         if not teacher:
             raise HTTPException(status_code=400, detail=f"Teacher ID '{tid}' not found in registry")
+    if auth.get("role") == "teacher":
+        if tid and tid != auth["sub"]:
+            raise HTTPException(403, "Teachers can only create their own classes")
+        tid = auth["sub"]
 
     code = (item.class_code.strip().upper() if item.class_code and item.class_code.strip() else cid)
     if len(code) > 32:
         raise HTTPException(status_code=400, detail="Class code cannot exceed 32 characters")
 
-    existing = db.get(CourseClass, cid)
+    existing = find_class_by_code(db, cid)
     if existing:
-        raise HTTPException(status_code=400, detail=f"Class ID '{cid}' already exists")
+        raise HTTPException(status_code=400, detail=f"Class ID '{cid}' already exists or is in use as a class code")
 
     # Check if class_code already in use
-    code_exists = db.scalars(
-        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
-    ).first()
+    code_exists = find_class_by_code(db, code)
     if code_exists:
         raise HTTPException(status_code=400, detail=f"Class code '{code}' is already in use by class '{code_exists.class_id}'")
 
@@ -542,9 +634,7 @@ def get_class_by_code(class_code: str, db: Session = Depends(get_db)):
     code = class_code.strip().upper() if class_code else ""
     if not code:
         raise HTTPException(status_code=400, detail="Class code cannot be empty")
-    course = db.scalars(
-        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
-    ).first()
+    course = find_class_by_code(db, code)
     if not course:
         raise HTTPException(status_code=404, detail=f"No class found with code '{code}'")
     return {
@@ -559,20 +649,23 @@ def get_class_by_code(class_code: str, db: Session = Depends(get_db)):
 @app.post("/api/classes/join")
 def join_class_by_code(
     req: JoinClassRequest,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    student_id = (auth.get("sub") if auth else None) or (req.student_id.strip().upper() if req.student_id and req.student_id.strip() else None)
-    if not student_id:
-        raise HTTPException(status_code=400, detail="Student identification required (Bearer token or student_id in body)")
+    if auth.get("role") == "student":
+        student_id = auth["sub"]
+    elif req.student_id and req.student_id.strip():
+        student_id = req.student_id.strip().upper()
+    else:
+        student_id = auth["sub"]
+    if auth.get("role") == "student" and student_id != auth["sub"]:
+        raise HTTPException(status_code=403, detail="Students may only join classes for themselves")
 
     code = req.class_code.strip().upper() if req.class_code and req.class_code.strip() else ""
     if not code:
         raise HTTPException(status_code=400, detail="Class code cannot be empty")
 
-    course = db.scalars(
-        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
-    ).first()
+    course = find_class_by_code(db, code)
     if not course:
         raise HTTPException(status_code=404, detail=f"Invalid class code '{code}'. Class not found.")
 
@@ -581,7 +674,6 @@ def join_class_by_code(
         raise HTTPException(status_code=404, detail=f"Student ID '{student_id}' not found in registry")
 
     # If student previously had an enrolled class, ensure it is recorded in Enrollment
-    import uuid
     if student.class_id and student.class_id != course.class_id:
         prior_enr = db.scalars(
             select(Enrollment).where(
@@ -638,9 +730,7 @@ def join_class_v2(
     if not code:
         raise HTTPException(status_code=400, detail="Class code cannot be empty")
 
-    course = db.scalars(
-        select(CourseClass).where((CourseClass.class_code.ilike(code)) | (CourseClass.class_id.ilike(code)))
-    ).first()
+    course = find_class_by_code(db, code)
     if not course:
         raise HTTPException(status_code=404, detail=f"Invalid class code '{code}'. Class not found.")
 
@@ -713,10 +803,18 @@ def get_class_roster(class_id: str, db: Session = Depends(get_db)):
 @app.get("/api/students/{student_id}/classes")
 def get_student_classes(
     student_id: str,
-    auth: Optional[dict] = Depends(get_auth_context),
+    auth: dict = Depends(require_authenticated_user),
     db: Session = Depends(get_db)
 ):
+    if not auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     sid = student_id.strip().upper()
+    if auth.get("role") == "student" and auth.get("sub") != sid:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students may only view their own classes")
     student = db.get(Student, sid)
     if not student:
         raise HTTPException(status_code=404, detail=f"Student '{sid}' not found in registry")
@@ -773,4 +871,18 @@ def get_my_classes_v2(
     ]
 
 
+from pathlib import Path
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from .demo import router as demo_router
 
+app.include_router(demo_router)
+WEB_ROOT = Path(__file__).resolve().parent.parent / "webapp"
+
+
+@app.get("/", include_in_schema=False)
+def demo_page():
+    return FileResponse(WEB_ROOT / "demo.html")
+
+
+app.mount("/webapp", StaticFiles(directory=WEB_ROOT), name="webapp")

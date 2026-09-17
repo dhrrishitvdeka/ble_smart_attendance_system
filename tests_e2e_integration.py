@@ -60,7 +60,7 @@ def test_e2e_02_class_roster_discovery():
     classes = r_classes.json()
     assert any(c["class_id"] == "CSE-A" for c in classes)
 
-    r_roster = client.get("/api/classes/CSE-A/roster")
+    r_roster = client.get("/api/classes/CSE-A/roster", headers={"Authorization": "Bearer " + create_access_token({"sub": "T001", "role": "teacher"})})
     assert r_roster.status_code == 200
     roster = r_roster.json()
     assert len(roster) >= 6
@@ -276,7 +276,7 @@ def test_e2e_06_security_rejections():
 def test_e2e_07_device_id_schema_consistency_and_direct_beacon_codec():
     """Verify system-wide device ID naming conventions and direct teacher beacon decoding (hop=0)."""
     # 1. Verify roster device ID schema matches DEV-S00x across all students
-    r_roster = client.get("/api/classes/CSE-A/roster")
+    r_roster = client.get("/api/classes/CSE-A/roster", headers={"Authorization": "Bearer " + create_access_token({"sub": "T001", "role": "teacher"})})
     assert r_roster.status_code == 200
     roster = r_roster.json()
     for s in roster:
@@ -304,6 +304,7 @@ def test_e2e_08_class_code_and_student_join_mechanism():
     student_s4_token = create_access_token({"sub": "S004", "role": "student"})
     headers_teacher = {"Authorization": f"Bearer {teacher_token}"}
     headers_s4 = {"Authorization": f"Bearer {student_s4_token}"}
+    headers_s3 = {"Authorization": f"Bearer {student_s3_token}"}
 
     # 1. Create a new class with custom class code
     ts = int(time.time() * 1000)
@@ -345,15 +346,15 @@ def test_e2e_08_class_code_and_student_join_mechanism():
 
     # 4. Student S003 joins class via code
     # Negative test: missing code
-    r_join_empty = client.post("/api/classes/join", json={"student_id": "S003", "class_code": ""})
+    r_join_empty = client.post("/api/classes/join", headers=headers_s3, json={"student_id": "S003", "class_code": ""})
     assert r_join_empty.status_code == 400
 
     # Negative test: invalid code
-    r_join_invalid = client.post("/api/classes/join", json={"student_id": "S003", "class_code": "WRONG-CODE"})
+    r_join_invalid = client.post("/api/classes/join", headers=headers_s3, json={"student_id": "S003", "class_code": "WRONG-CODE"})
     assert r_join_invalid.status_code == 404
 
     # Positive test: S003 joins via class code
-    r_join_s3 = client.post("/api/classes/join", json={"student_id": "S003", "class_code": test_class_code.lower()})
+    r_join_s3 = client.post("/api/classes/join", headers=headers_s3, json={"student_id": "S003", "class_code": test_class_code.lower()})
     assert r_join_s3.status_code == 200
     join_data = r_join_s3.json()
     assert join_data["success"] is True
@@ -367,7 +368,7 @@ def test_e2e_08_class_code_and_student_join_mechanism():
     assert r_join_s4.json()["class_id"] == test_class_id
 
     # 6. Verify class roster now contains S003 and S004
-    r_roster = client.get(f"/api/classes/{test_class_id}/roster")
+    r_roster = client.get(f"/api/classes/{test_class_id}/roster", headers=headers_teacher)
     assert r_roster.status_code == 200
     roster = r_roster.json()
     roster_sids = [s["student_id"] for s in roster]
@@ -401,7 +402,7 @@ def test_e2e_08_class_code_and_student_join_mechanism():
     assert r_sync.json()["stored"] == 2
 
     # 8. Re-join CSE-A via its class code to verify multi-class transitions and preserve CSE-A roster
-    r_rejoin_s3 = client.post("/api/classes/join", json={"student_id": "S003", "class_code": "CSE-A"})
+    r_rejoin_s3 = client.post("/api/classes/join", headers=headers_s3, json={"student_id": "S003", "class_code": "CSE-A"})
     assert r_rejoin_s3.status_code == 200
     assert r_rejoin_s3.json()["class_id"] == "CSE-A"
 
@@ -410,19 +411,19 @@ def test_e2e_08_class_code_and_student_join_mechanism():
     assert r_rejoin_s4.json()["class_id"] == "CSE-A"
 
     # Verify CSE-A roster has all 6 students back
-    r_csea_roster = client.get("/api/classes/CSE-A/roster")
+    r_csea_roster = client.get("/api/classes/CSE-A/roster", headers={"Authorization": "Bearer " + create_access_token({"sub": "T001", "role": "teacher"})})
     assert r_csea_roster.status_code == 200
     assert len(r_csea_roster.json()) >= 6
 
     # 9. Verify multi-class retention: S003 and S004 STILL belong to the NET class!
-    r_net_roster_after = client.get(f"/api/classes/{test_class_id}/roster")
+    r_net_roster_after = client.get(f"/api/classes/{test_class_id}/roster", headers=headers_teacher)
     assert r_net_roster_after.status_code == 200
     net_sids_after = [s["student_id"] for s in r_net_roster_after.json()]
     assert "S003" in net_sids_after, "S003 must be retained in NET class even after re-joining CSE-A"
     assert "S004" in net_sids_after, "S004 must be retained in NET class even after re-joining CSE-A"
 
     # 10. Verify student classes query endpoints
-    r_s3_classes = client.get("/api/students/S003/classes")
+    r_s3_classes = client.get("/api/students/S003/classes", headers=headers_s3)
     assert r_s3_classes.status_code == 200
     s3_cids = [c["class_id"] for c in r_s3_classes.json()]
     assert "CSE-A" in s3_cids

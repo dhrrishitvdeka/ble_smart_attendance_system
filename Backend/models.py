@@ -9,6 +9,12 @@ class Base(DeclarativeBase):
     pass
 
 
+class Administrator(Base):
+    __tablename__ = "administrators"
+    admin_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+
+
 class Teacher(Base):
     __tablename__ = "teachers"
     teacher_id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -70,6 +76,27 @@ class Attendance(Base):
     via_student: Mapped[str | None] = mapped_column(String(128), nullable=True)
     synced: Mapped[bool] = mapped_column(Boolean, default=True)
     teacher_signature: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
+class DemoChallenge(Base):
+    __tablename__ = "demo_challenges"
+    challenge_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    student_id: Mapped[str] = mapped_column(String(32))
+    expected_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[int] = mapped_column(BigInteger)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    relay_student_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rssi: Mapped[int] = mapped_column(Integer)
+
+
+class DemoRelay(Base):
+    __tablename__ = "demo_relays"
+    relay_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    student_id: Mapped[str] = mapped_column(String(32))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[str] = mapped_column(String(16), default="near")
 
 
 class AuditLog(Base):

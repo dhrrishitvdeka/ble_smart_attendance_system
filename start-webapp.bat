@@ -1,27 +1,21 @@
 @echo off
-REM Serves the webapp at http://localhost:8080 so Web Bluetooth works.
-cd /d "%~dp0webapp"
-where python >nul 2>nul
-if %errorlevel%==0 (
-  echo Starting server: http://localhost:8080  (Ctrl+C to stop)
-  start "" http://localhost:8080/index.html
-  python -m http.server 8080
-  goto :eof
+setlocal
+cd /d "%~dp0"
+set "PYTHON=python"
+if exist ".venv\Scripts\python.exe" set "PYTHON=%~dp0.venv\Scripts\python.exe"
+"%PYTHON%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+if errorlevel 1 (
+  echo Python 3.10+ is required.
+  exit /b 1
 )
-where py >nul 2>nul
-if %errorlevel%==0 (
-  echo Starting server: http://localhost:8080  (Ctrl+C to stop)
-  start "" http://localhost:8080/index.html
-  py -m http.server 8080
-  goto :eof
+"%PYTHON%" -c "import fastapi, uvicorn, sqlalchemy, jwt" >nul 2>nul
+if errorlevel 1 (
+  echo Install dependencies first: python -m pip install -r Backend/requirements.txt
+  exit /b 1
 )
-where npx >nul 2>nul
-if %errorlevel%==0 (
-  echo Starting server: http://localhost:8080  (Ctrl+C to stop)
-  start "" http://localhost:8080/index.html
-  npx --yes http-server -p 8080 -c-1
-  goto :eof
-)
-echo Neither Python nor Node.js was found. Install one of them,
-echo or open index.html directly ^(real BLE will use simulation mode^).
-pause
+set "DATABASE_URL=sqlite:///./local_demo.db"
+set "ENFORCE_AUTH=true"
+echo Open http://127.0.0.1:8000 in separate teacher and student tabs.
+echo SIMULATION ONLY. Press Ctrl+C to stop. Data persists in local_demo.db.
+"%PYTHON%" -m uvicorn Backend.main:app --host 127.0.0.1 --port 8000 --workers 1
+
